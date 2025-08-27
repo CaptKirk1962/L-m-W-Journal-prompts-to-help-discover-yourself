@@ -2,183 +2,183 @@
   "themes": ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"],
   "questions": [
     {
-      "id": "q01_direction",
-      "text": "Right now, what feels most important to strengthen in your life?",
+      "id": "q1",
+      "text": "When you picture a deeply fulfilling week, what stands out most?",
       "choices": [
-        {"label": "Knowing who I am",              "weights": {"Identity": 2, "Growth": 1}},
-        {"label": "Learning & progress",           "weights": {"Growth": 2}},
-        {"label": "Closer relationships",          "weights": {"Connection": 2}},
-        {"label": "Calm & steadiness",             "weights": {"Peace": 2}},
-        {"label": "Adventure & novelty",           "weights": {"Adventure": 2, "Growth": 1}},
-        {"label": "Helping others",                "weights": {"Contribution": 2}}
+        {"label": "Quiet pockets of ease and unhurried time", "weights": {"Peace": 2}},
+        {"label": "Quality time with people who matter", "weights": {"Connection": 2}},
+        {"label": "Trying new places or experiences", "weights": {"Adventure": 2}},
+        {"label": "Learning something that expands me", "weights": {"Growth": 2}},
+        {"label": "Reminders of who I am and what I value", "weights": {"Identity": 2}},
+        {"label": "Doing something useful that helps others", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q02_energy",
-      "text": "Which activity leaves you feeling most energized after 30 minutes?",
+      "id": "q2",
+      "text": "Which statement feels most true right now?",
       "choices": [
-        {"label": "Journaling or self-reflection", "weights": {"Identity": 2, "Peace": 1}},
-        {"label": "Practicing a skill",            "weights": {"Growth": 2}},
-        {"label": "Time with someone I value",     "weights": {"Connection": 2}},
-        {"label": "Quiet walk / mindful break",    "weights": {"Peace": 2}},
-        {"label": "Exploring something new",       "weights": {"Adventure": 2}},
-        {"label": "Doing a helpful task",          "weights": {"Contribution": 2}}
+        {"label": "I want to reconnect with who I am outside of work", "weights": {"Identity": 2}},
+        {"label": "I am ready to level up a skill or habit", "weights": {"Growth": 2}},
+        {"label": "I want deeper friendships and community", "weights": {"Connection": 2}},
+        {"label": "I want to do something useful for others", "weights": {"Contribution": 2}},
+        {"label": "I want steadier days and more calm", "weights": {"Peace": 2}},
+        {"label": "I want more novelty and new experiences", "weights": {"Adventure": 2}}
       ]
     },
     {
-      "id": "q03_obstacle",
-      "text": "When you get stuck, what’s the usual blocker?",
+      "id": "q3",
+      "text": "How do you usually spend a free evening?",
       "choices": [
-        {"label": "Not sure who/what I want",      "weights": {"Identity": 2}},
-        {"label": "Overwhelm / too big a step",    "weights": {"Growth": 1, "Peace": -1}},
-        {"label": "Isolation / no support",        "weights": {"Connection": -1, "Growth": -1}},
-        {"label": "Stress / low bandwidth",        "weights": {"Peace": -2}},
-        {"label": "Comfort zone feels tight",      "weights": {"Adventure": -2}},
-        {"label": "Not seeing the impact I make",  "weights": {"Contribution": -2}}
+        {"label": "Recharge quietly with rest, reading, or a walk", "weights": {"Peace": 2}},
+        {"label": "Call or meet up with someone I care about", "weights": {"Connection": 2}},
+        {"label": "Tinker with a hobby or take a short class", "weights": {"Growth": 2}},
+        {"label": "Find a low-stakes adventure or new activity", "weights": {"Adventure": 2}},
+        {"label": "Journal or make something that feels like me", "weights": {"Identity": 2}},
+        {"label": "Do a small good turn for someone nearby", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q04_weekly_move",
-      "text": "Pick a weekly move that would help future you most.",
+      "id": "q4",
+      "text": "What kind of challenge are you craving right now?",
       "choices": [
-        {"label": "A 15-min identity ritual",      "weights": {"Identity": 2}},
-        {"label": "Practice a skill 3×/week",      "weights": {"Growth": 2}},
-        {"label": "One meaningful check-in",       "weights": {"Connection": 2}},
-        {"label": "Two calm resets",               "weights": {"Peace": 2}},
-        {"label": "One micro-adventure",           "weights": {"Adventure": 2}},
-        {"label": "One act of service",            "weights": {"Contribution": 2}}
+        {"label": "A structured plan to grow or improve", "weights": {"Growth": 2}},
+        {"label": "Something bold that stretches my comfort zone", "weights": {"Adventure": 2, "Growth": 1}},
+        {"label": "A chance to help or mentor someone", "weights": {"Contribution": 2, "Connection": 1}},
+        {"label": "Simplifying routines to feel calmer", "weights": {"Peace": 2}},
+        {"label": "Acting in line with my core values", "weights": {"Identity": 2}},
+        {"label": "Deepening one key relationship", "weights": {"Connection": 2}}
       ]
     },
     {
-      "id": "q05_focus",
-      "text": "Which focus tends to create the most ripple effects for you?",
+      "id": "q5",
+      "text": "Which relationship intention feels most important this month?",
       "choices": [
-        {"label": "Clarifying my values",          "weights": {"Identity": 2}},
-        {"label": "Tiny daily reps",               "weights": {"Growth": 2}},
-        {"label": "Investing in one relationship", "weights": {"Connection": 2}},
-        {"label": "Protecting sleep & recovery",   "weights": {"Peace": 2}},
-        {"label": "Saying yes to novelty",         "weights": {"Adventure": 2}},
-        {"label": "Contributing where I am",       "weights": {"Contribution": 2}}
+        {"label": "Initiate meaningful conversations", "weights": {"Connection": 2}},
+        {"label": "Create or join a group I can belong to", "weights": {"Connection": 2, "Identity": 1}},
+        {"label": "Set kind boundaries so I have energy for people", "weights": {"Peace": 2, "Connection": 1}},
+        {"label": "Plan one memorable outing with someone", "weights": {"Adventure": 1, "Connection": 2}},
+        {"label": "Show up as my true self with others", "weights": {"Identity": 2}},
+        {"label": "Practice one relationship skill (listening, honesty)", "weights": {"Growth": 2}}
       ]
     },
     {
-      "id": "q06_social",
-      "text": "Your ideal social rhythm looks like…",
+      "id": "q6",
+      "text": "How do you want your work to support your life right now?",
       "choices": [
-        {"label": "Solo time to think",            "weights": {"Identity": 1, "Peace": 1}},
-        {"label": "Small group learning",          "weights": {"Growth": 1, "Connection": 1}},
-        {"label": "1:1 deep conversations",        "weights": {"Connection": 2}},
-        {"label": "Quiet, predictable routines",   "weights": {"Peace": 2}},
-        {"label": "Meet new people & places",      "weights": {"Adventure": 2}},
-        {"label": "Volunteering / serving",        "weights": {"Contribution": 2}}
+        {"label": "Protect space for rest and routines", "weights": {"Peace": 2}},
+        {"label": "Reflect my values and sense of self", "weights": {"Identity": 2}},
+        {"label": "Offer growth and learning opportunities", "weights": {"Growth": 2}},
+        {"label": "Let me make a positive difference", "weights": {"Contribution": 2}},
+        {"label": "Help me build genuine relationships", "weights": {"Connection": 2}},
+        {"label": "Give room for new experiences and curiosity", "weights": {"Adventure": 2}}
       ]
     },
     {
-      "id": "q07_progress",
-      "text": "What most proves to you that you’re progressing?",
+      "id": "q7",
+      "text": "What helps you feel most like yourself?",
       "choices": [
-        {"label": "I act in line with my values",  "weights": {"Identity": 2}},
-        {"label": "I’m building skill/knowledge",  "weights": {"Growth": 2}},
-        {"label": "I feel more connected",         "weights": {"Connection": 2}},
-        {"label": "I’m calmer & less reactive",    "weights": {"Peace": 2}},
-        {"label": "I try new things regularly",    "weights": {"Adventure": 2}},
-        {"label": "People benefit from my work",   "weights": {"Contribution": 2}}
+        {"label": "Time with people who truly get me", "weights": {"Connection": 2, "Identity": 1}},
+        {"label": "Exploring a creative or playful impulse", "weights": {"Adventure": 2, "Identity": 1}},
+        {"label": "Quiet morning or evening rituals", "weights": {"Peace": 2, "Identity": 1}},
+        {"label": "Investing in a personal skill or craft", "weights": {"Growth": 2, "Identity": 1}},
+        {"label": "Acting in line with my values", "weights": {"Identity": 2}},
+        {"label": "Contributing to something bigger than me", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q08_restore",
-      "text": "When you need to restore, what helps first?",
+      "id": "q8",
+      "text": "How do you usually reset after stress?",
       "choices": [
-        {"label": "Name what matters to me",       "weights": {"Identity": 2}},
-        {"label": "Learn a tiny tactic",           "weights": {"Growth": 2}},
-        {"label": "Time with my person/people",    "weights": {"Connection": 2}},
-        {"label": "Breath, walk, or nap",          "weights": {"Peace": 2}},
-        {"label": "Change of scene",               "weights": {"Adventure": 2}},
-        {"label": "Help someone briefly",          "weights": {"Contribution": 2}}
+        {"label": "Slow down and do something calming", "weights": {"Peace": 2}},
+        {"label": "Connect with a friend or family member", "weights": {"Connection": 2}},
+        {"label": "Move my body or change the scene", "weights": {"Adventure": 2}},
+        {"label": "Reflect on what I am learning and adjust", "weights": {"Growth": 2}},
+        {"label": "Re-center on what matters to me", "weights": {"Identity": 2}},
+        {"label": "Do a small act of service", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q09_risk",
-      "text": "Your relationship with risk is…",
+      "id": "q9",
+      "text": "Pick a mini-project that sounds energizing for this month.",
       "choices": [
-        {"label": "Prefer clarity first",          "weights": {"Identity": 1, "Peace": 1}},
-        {"label": "Test safely in small steps",    "weights": {"Growth": 2}},
-        {"label": "Braver with a buddy",           "weights": {"Connection": 2}},
-        {"label": "Prefer to stabilize first",     "weights": {"Peace": 2}},
-        {"label": "Jump, then learn",              "weights": {"Adventure": 2}},
-        {"label": "Risk for meaningful impact",    "weights": {"Contribution": 2}}
+        {"label": "Build a small skill with a simple plan", "weights": {"Growth": 2}},
+        {"label": "Volunteer or help someone directly", "weights": {"Contribution": 2, "Connection": 1}},
+        {"label": "Curate a playlist, reading list, or mood board that reflects me", "weights": {"Identity": 2}},
+        {"label": "Plan a micro-adventure in my city", "weights": {"Adventure": 2}},
+        {"label": "Create a calmer evening routine", "weights": {"Peace": 2}},
+        {"label": "Start a tiny project with a friend", "weights": {"Connection": 2}}
       ]
     },
     {
-      "id": "q10_identity",
-      "text": "Which identity thread do you most want to express?",
+      "id": "q10",
+      "text": "How adventurous do you feel right now?",
       "choices": [
-        {"label": "Authentic / true-to-self",      "weights": {"Identity": 2}},
-        {"label": "Learner / builder",             "weights": {"Growth": 2}},
-        {"label": "Connector / nurturer",          "weights": {"Connection": 2}},
-        {"label": "Calm / grounded",               "weights": {"Peace": 2}},
-        {"label": "Explorer / pioneer",            "weights": {"Adventure": 2}},
-        {"label": "Helper / contributor",          "weights": {"Contribution": 2}}
+        {"label": "Very: I want to try bold or new experiences", "weights": {"Adventure": 2}},
+        {"label": "Moderately: I can stretch a little", "weights": {"Adventure": 1, "Growth": 1}},
+        {"label": "Not much: I prefer predictable comfort", "weights": {"Peace": 2}},
+        {"label": "It depends: with support, I can try something small", "weights": {"Connection": 1, "Adventure": 1}},
+        {"label": "I want to act in line with my values first", "weights": {"Identity": 2}},
+        {"label": "I’m willing if it serves a good purpose", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q11_habit",
-      "text": "Pick the habit that would change most in 30 days:",
+      "id": "q11",
+      "text": "Which gives you the strongest sense of meaning right now?",
       "choices": [
-        {"label": "Identity check-in (2 min)",     "weights": {"Identity": 2}},
-        {"label": "Practice block (15–20 min)",    "weights": {"Growth": 2}},
-        {"label": "Daily reach-out",               "weights": {"Connection": 2}},
-        {"label": "Wind-down ritual",              "weights": {"Peace": 2}},
-        {"label": "Micro-adventure plan",          "weights": {"Adventure": 2}},
-        {"label": "Give/help daily",               "weights": {"Contribution": 2}}
+        {"label": "Helping others or contributing to a cause", "weights": {"Contribution": 2}},
+        {"label": "Deepening bonds with people close to me", "weights": {"Connection": 2}},
+        {"label": "Becoming the person I want to be", "weights": {"Identity": 2}},
+        {"label": "Growing skills I am proud of", "weights": {"Growth": 2}},
+        {"label": "Feeling calmer and at peace with my days", "weights": {"Peace": 2}},
+        {"label": "Saying yes to discovery and small adventures", "weights": {"Adventure": 2}}
       ]
     },
     {
-      "id": "q12_tradeoff",
-      "text": "If you had to trade one thing a little to gain a lot, you’d trade…",
+      "id": "q12",
+      "text": "How do you prefer to learn at the moment?",
       "choices": [
-        {"label": "Certainty for authenticity",    "weights": {"Identity": 2, "Peace": -1}},
-        {"label": "Comfort for growth",            "weights": {"Growth": 2, "Peace": -1}},
-        {"label": "Time alone for connection",     "weights": {"Connection": 2, "Identity": -1}},
-        {"label": "Speed for calm",                "weights": {"Peace": 2, "Growth": -1}},
-        {"label": "Routine for novelty",           "weights": {"Adventure": 2, "Peace": -1}},
-        {"label": "Self-focus for contribution",   "weights": {"Contribution": 2, "Identity": -1}}
+        {"label": "Self-guided reading or online courses", "weights": {"Growth": 2}},
+        {"label": "Learning with others or a mentor", "weights": {"Connection": 2, "Growth": 1}},
+        {"label": "Hands-on experiments and field trips", "weights": {"Adventure": 2, "Growth": 1}},
+        {"label": "Gentle, reflective journaling or walks", "weights": {"Peace": 2, "Growth": 1}},
+        {"label": "Learning that aligns with my values", "weights": {"Identity": 2}},
+        {"label": "Learning that helps me help others", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q13_weekfeel",
-      "text": "A week that feels ‘signature you’ would include…",
+      "id": "q13",
+      "text": "Which morning routine would help most right now?",
       "choices": [
-        {"label": "One moment of self-honesty",    "weights": {"Identity": 2}},
-        {"label": "Learning that excites me",      "weights": {"Growth": 2}},
-        {"label": "Connection I can feel",         "weights": {"Connection": 2}},
-        {"label": "Good sleep & slow moments",     "weights": {"Peace": 2}},
-        {"label": "Something I’ve never done",     "weights": {"Adventure": 2}},
-        {"label": "A meaningful contribution",     "weights": {"Contribution": 2}}
+        {"label": "A calm start: hydrate, stretch, and a quiet moment", "weights": {"Peace": 2}},
+        {"label": "A focused start: plan priorities and one key task", "weights": {"Growth": 2}},
+        {"label": "An expressive start: write or create something small", "weights": {"Identity": 2}},
+        {"label": "An energizing start: get outside for 10 minutes", "weights": {"Adventure": 2}},
+        {"label": "A connected start: send one thoughtful message", "weights": {"Connection": 2}},
+        {"label": "A giving start: one small act of service", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q14_barrier",
-      "text": "The barrier that trips you most often is…",
+      "id": "q14",
+      "text": "Which boundary would make the biggest difference this week?",
       "choices": [
-        {"label": "Self-doubt / unclear values",   "weights": {"Identity": -2}},
-        {"label": "Perfectionism / too big",       "weights": {"Growth": -2}},
-        {"label": "Withdrawing from people",       "weights": {"Connection": -2}},
-        {"label": "Stress / scattered days",       "weights": {"Peace": -2}},
-        {"label": "Avoiding the new",              "weights": {"Adventure": -2}},
-        {"label": "Feeling like it doesn’t matter","weights": {"Contribution": -2}}
+        {"label": "Protect time for rest or hobbies", "weights": {"Peace": 2}},
+        {"label": "Say no to what is not aligned with my values", "weights": {"Identity": 2}},
+        {"label": "Limit distractions when with people I care about", "weights": {"Connection": 2}},
+        {"label": "Create a focused block to progress one goal", "weights": {"Growth": 2}},
+        {"label": "Leave room for one small adventure", "weights": {"Adventure": 2}},
+        {"label": "Commit to a small way of helping this week", "weights": {"Contribution": 2}}
       ]
     },
     {
-      "id": "q15_nextstep",
-      "text": "If you choose one next step this week, it will be…",
+      "id": "q15",
+      "text": "Where do you most want to contribute beyond yourself?",
       "choices": [
-        {"label": "Identity: name a value & act",  "weights": {"Identity": 2}},
-        {"label": "Growth: schedule practice",     "weights": {"Growth": 2}},
-        {"label": "Connection: plan a reach-out",  "weights": {"Connection": 2}},
-        {"label": "Peace: protect a reset",        "weights": {"Peace": 2}},
-        {"label": "Adventure: set a micro-plan",   "weights": {"Adventure": 2}},
-        {"label": "Contribution: pick a small act","weights": {"Contribution": 2}}
+        {"label": "Support a community or local cause", "weights": {"Contribution": 2, "Connection": 1}},
+        {"label": "Share knowledge or mentor someone", "weights": {"Contribution": 2, "Growth": 1}},
+        {"label": "Use my strengths in a way that feels true to me", "weights": {"Identity": 2, "Contribution": 1}},
+        {"label": "Join an adventure with a purpose (cleanup, fundraiser, etc.)", "weights": {"Adventure": 2, "Contribution": 1}},
+        {"label": "Offer calm support where it’s needed", "weights": {"Peace": 2}},
+        {"label": "Build belonging by bringing people together", "weights": {"Connection": 2}}
       ]
     }
   ]
