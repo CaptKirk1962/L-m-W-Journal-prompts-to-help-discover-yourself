@@ -1,0 +1,14 @@
+# Lean requirements for the Life Minus Work app
+# Pin Streamlit to a stable 1.x that works well on Streamlit Cloud
+streamlit==1.36.0
+
+# PDF generation
+fpdf==1.7.2
+
+# Image support (also handles .webp -> .png conversion)
+Pillow>=10.3.0
+
+# OpenAI Python SDK (Responses API). This pulls httpx & pydantic automatically.
+openai>=1.60.0
+
+
