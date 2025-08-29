@@ -1,4 +1,4 @@
-# app.py — Life Minus Work (Option A: single AI call renders full, rich report)
+# app.py — Life Minus Work (rich report with Archetype, Core Need, Metaphor, etc.)
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, textwrap
 from pathlib import Path
@@ -8,18 +8,16 @@ import streamlit as st
 from fpdf import FPDF
 from PIL import Image
 
-# -------------------------
-# Config
-# -------------------------
+# ---------- Config ----------
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
 AI_MODEL = "gpt-5-mini"
-AI_MAX_TOKENS_CAP = 7000       # generous, wow-factor
-AI_MAX_TOKENS_FALLBACK = 6000  # 1 retry if JSON fails
+AI_MAX_TOKENS_CAP = 7000
+AI_MAX_TOKENS_FALLBACK = 6000
 
 FUTURE_WEEKS_MIN, FUTURE_WEEKS_MAX, FUTURE_WEEKS_DEFAULT = 2, 8, 4
 
-# OpenAI client
+# OpenAI SDK import flag
 OPENAI_OK = False
 try:
     from openai import OpenAI
@@ -28,9 +26,7 @@ except Exception:
     OPENAI_OK = False
 
 
-# -------------------------
-# Helpers: files & questions
-# -------------------------
+# ---------- File & questions ----------
 def here() -> Path:
     return Path(__file__).parent
 
@@ -55,9 +51,7 @@ def q_version_hash(questions: List[dict]) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
-# -------------------------
-# Streamlit state scaffolding
-# -------------------------
+# ---------- Session state scaffolding ----------
 def ensure_state(questions: List[dict]):
     ver = q_version_hash(questions)
     if "answers_by_qid" not in st.session_state:
@@ -78,17 +72,14 @@ def free_key(qid: str) -> str:
     return f"{qid}__free"
 
 
-# -------------------------
-# Latin-1 safety for fpdf 1.x
-# -------------------------
+# ---------- fpdf 1.x Latin-1 safety ----------
 LATIN1_MAP = {
     "—": "-", "–": "-", "―": "-",
     "“": '"', "”": '"', "„": '"',
     "’": "'", "‘": "'", "‚": "'",
     "•": "-", "·": "-", "∙": "-",
     "…": "...",
-    "\u00a0": " ",   # nbsp
-    "\u200b": "",    # zwsp
+    "\u00a0": " ", "\u200b": ""
 }
 
 def to_latin1(text: str) -> str:
@@ -101,7 +92,7 @@ def to_latin1(text: str) -> str:
         t = t.encode("latin-1", errors="ignore").decode("latin-1")
     except Exception:
         t = t.encode("ascii", errors="ignore").decode("ascii")
-    # avoid long unbreakable tokens (fpdf1 quirk)
+    # avoid very long unbreakable tokens
     t = re.sub(r"(\S{80})\S+", r"\1", t)
     return t
 
@@ -112,9 +103,7 @@ def sc(pdf: "FPDF", w: float, h: float, text: str):
     pdf.cell(w, h, to_latin1(text))
 
 
-# -------------------------
-# PDF helpers
-# -------------------------
+# ---------- PDF helpers ----------
 class PDF(FPDF):
     pass
 
@@ -134,7 +123,6 @@ def draw_scores_barchart(pdf: FPDF, scores: Dict[str, int]):
 
     positive = [v for v in scores.values() if v > 0]
     max_pos = max(positive) if positive else 1
-
     bar_w_max = 120
     x_left = pdf.get_x() + 10
     y = pdf.get_y()
@@ -168,15 +156,12 @@ def bullet_list(pdf: FPDF, items: List[str]):
 
 def two_cols_lists(pdf: FPDF, left_title: str, left_items: List[str],
                    right_title: str, right_items: List[str]):
-    # simple stacked two sections
     setf(pdf, "B", 12); mc(pdf, left_title); setf(pdf, "", 11); bullet_list(pdf, left_items)
     pdf.ln(2)
     setf(pdf, "B", 12); mc(pdf, right_title); setf(pdf, "", 11); bullet_list(pdf, right_items)
 
 
-# -------------------------
-# Scoring
-# -------------------------
+# ---------- Scoring ----------
 def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dict[str, int]:
     scores = {t: 0 for t in THEMES}
     for q in questions:
@@ -194,9 +179,7 @@ def top_n_themes(scores: Dict[str, int], n: int = 3) -> List[str]:
     return [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:n]]
 
 
-# -------------------------
-# AI
-# -------------------------
+# ---------- AI ----------
 def ai_enabled() -> bool:
     return OPENAI_OK and bool(os.getenv("OPENAI_API_KEY"))
 
@@ -209,34 +192,41 @@ def format_ai_prompt(first_name: str, horizon_weeks: int, scores: Dict[str, int]
             fr_bits.append(f"{qid}: {txt.strip()}")
     fr_str = "\n".join(fr_bits) if fr_bits else "None provided."
 
-    # single JSON covering all sections; ASCII only to be fpdf-safe
+    # one JSON for everything; ASCII-only to be fpdf-safe
     return textwrap.dedent(f"""
-    Act as a master reflection coach. Using the theme scores, top themes, and the user's own words,
-    produce ONE JSON object with EXACTLY these keys:
+    You are a master reflection coach. Using the theme scores, top themes, and the user's own words,
+    produce ONE JSON object with EXACTLY these keys. Use ASCII only.
 
-    deep_insight: string (400-600 words, second-person, practical, warm)
-    why_now: string (120-180 words, short context, no medical claims)
-    future_snapshot: string (150-220 words, write as if it is {horizon_weeks} weeks later and they nailed it)
+    # Header identity
+    archetype: short string (<= 3 words)
+    core_need: short phrase (<= 8 words)
+    signature_metaphor: short phrase (<= 6 words)
+    signature_sentence: single sentence (<= 16 words)
 
-    signature_strengths: array of 3-5 short phrases (<= 8 words each)
-    energy_map: object with:
-      energizers: array of 3-6 short items (<= 8 words each)
-      drainers: array of 3-6 short items (<= 8 words each)
-    hidden_tensions: array of 2-4 short observations (<= 12 words each)
-    watch_out: string (one gentle blind spot, <= 40 words)
+    # Narrative
+    deep_insight: 400-600 words, second-person, practical, warm
+    why_now: 120-180 words
+    future_snapshot: 150-220 words (as if it is {horizon_weeks} weeks later)
 
-    actions_7d: array of exactly 3 concrete actions for next 7 days (<= 12 words each)
-    impl_if_then: array of exactly 3 lines like "If X, then I will Y"
-    plan_1_week: array of 5-7 steps for a gentle one-week plan (<= 12 words each)
+    # Lists/briefs
+    from_your_words: object with:
+      summary: 60-110 words synthesizing their write-ins
+      keepers: array of 2-3 short quotes or one-liners (<= 12 words)
+    one_liners_to_keep: array of 3-5 short one-liners (<= 10 words)
+    personal_pledge: one sentence in first person ("I will ...", <= 16 words)
+    what_this_really_says: 180-260 words
 
-    balancing_opportunity: array of 1-2 one-liners pointing to low themes (<= 14 words each)
-    keep_in_view: array of 2-4 short reminders (<= 10 words each)
-    tiny_progress: array of exactly 3 milestones text (<= 10 words each)
-
-    Constraints:
-    - USE ASCII ONLY. No fancy quotes, bullets, dashes, or emojis.
-    - Keep list items short so they fit in a narrow PDF column.
-    - Avoid repeating the user's text verbatim; synthesize kindly.
+    # Coaching blocks already in your app
+    signature_strengths: array of 3-5 short phrases (<= 8 words)
+    energy_map: object with energizers: array(3-6), drainers: array(3-6) (each <= 8 words)
+    hidden_tensions: array of 2-4 short items (<= 12 words)
+    watch_out: one gentle blind spot (<= 40 words)
+    actions_7d: array of exactly 3 items (<= 12 words)
+    impl_if_then: array of exactly 3 items "If X, then I will Y"
+    plan_1_week: array of 5-7 steps (<= 12 words)
+    balancing_opportunity: array of 1-2 one-liners for low themes (<= 14 words)
+    keep_in_view: array of 2-4 reminders (<= 10 words)
+    tiny_progress: array of exactly 3 milestones (<= 10 words)
 
     INPUT
     Name: {first_name or "friend"}
@@ -311,7 +301,6 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
         except Exception:
             data = None
 
-    # Persist last AI for debugging
     try:
         (here() / "_last_ai.json").write_text(raw_text[:12000], encoding="utf-8")
         (Path("/tmp") / "last_ai.json").write_text(raw_text[:12000], encoding="utf-8")
@@ -319,19 +308,27 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
         pass
 
     if not data:
-        # concise fallback for every key
+        # concise fallback includes the new header fields
         return ({
+            "archetype": "Curious Connector",
+            "core_need": "Growth with people",
+            "signature_metaphor": "Compass in motion",
+            "signature_sentence": "Small shared adventures are your fastest route to growth.",
             "deep_insight": "You are closer than you think. Focus on a few levers that energize you and remove one small drainer.",
             "why_now": "This season rewards steady experiments, kind boundaries, and inviting others into your progress.",
-            "future_snapshot": f"In about {horizon_weeks} weeks you feel lighter and clearer. Small wins stacked into momentum.",
+            "future_snapshot": f"In {horizon_weeks} weeks you feel lighter and clearer. Small wins stacked into momentum.",
+            "from_your_words": {"summary": "Your notes highlight craving motion with meaning.", "keepers": ["Try one new thing", "Invite a friend"]},
+            "one_liners_to_keep": ["Small beats perfect", "Invite, don’t wait", "Debrief 2 minutes"],
+            "personal_pledge": "I will try one small new thing each week.",
+            "what_this_really_says": "You thrive where novelty meets relationship. Design tiny anchors so experiences turn into growth.",
             "signature_strengths": ["Curiosity in action", "People-first focus", "Follow-through under constraints"],
             "energy_map": {"energizers": ["Tiny wins daily", "Learning in motion"], "drainers": ["Overcommitment", "Unclear next step"]},
             "hidden_tensions": ["High standards vs limited time"],
             "watch_out": "Beware scattering energy across too many half-starts.",
             "actions_7d": ["One 20m skill rep", "One connection invite", "One micro-adventure"],
-            "impl_if_then": ["If distracted, then 10m focus timer", "If overwhelmed, then one next step", "If stuck, then message an ally"],
-            "plan_1_week": ["Mon: choose lever", "Tue: 20m rep", "Wed: invite friend", "Thu: reset space", "Fri: micro-adventure", "Sat: reflect 10m", "Sun: prep next week"],
-            "balancing_opportunity": ["Protect calm blocks", "Batch low-value tasks"],
+            "impl_if_then": ["If distracted, then 10m timer", "If overwhelmed, then one step", "If stuck, then message ally"],
+            "plan_1_week": ["Mon choose lever", "Tue 20m rep", "Wed invite friend", "Thu reset space", "Fri micro-adventure", "Sat reflect 10m", "Sun prep next"],
+            "balancing_opportunity": ["Protect calm blocks", "Batch small chores"],
             "keep_in_view": ["Small > perfect", "Ask for help"],
             "tiny_progress": ["Finish one rep", "Send one invite", "Take one walk"],
         }, usage, raw_text[:800])
@@ -339,9 +336,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
     return (data, usage, raw_text[:800])
 
 
-# -------------------------
-# PDF builder
-# -------------------------
+# ---------- PDF builder ----------
 def make_pdf_bytes(
     first_name: str,
     email: str,
@@ -355,7 +350,7 @@ def make_pdf_bytes(
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_page()
 
-    # Logo top, then header (no overlap)
+    # Logo then space then title (prevents overlap)
     y_after_logo = 12
     if logo_path and Path(logo_path).exists():
         try:
@@ -363,21 +358,55 @@ def make_pdf_bytes(
             tmp = here() / "_logo_tmp.png"
             img.save(tmp, format="PNG")
             pdf.image(str(tmp), x=10, y=10, w=28)
-            y_after_logo = 44  # leave space under the logo
+            y_after_logo = 44
         except Exception:
-            y_after_logo = 20
+            y_after_logo = 24
     pdf.set_y(y_after_logo)
 
     # Title
     setf(pdf, "B", 18); mc(pdf, "Life Minus Work - Reflection Report", h=9)
     setf(pdf, "", 12); mc(pdf, f"Hi {first_name or 'there'},")
 
-    # Top themes + chart
+    # ===== Header identity block =====
+    section_break(pdf, "Archetype", "A simple lens for your pattern.")
+    mc(pdf, ai.get("archetype", "-"))
+    section_break(pdf, "Core Need", "The fuel that keeps your effort meaningful.")
+    mc(pdf, ai.get("core_need", "-"))
+    section_break(pdf, "Signature Metaphor", "A mental image to remember your mode.")
+    mc(pdf, ai.get("signature_metaphor", "-"))
+    section_break(pdf, "Signature Sentence", "One clean line to orient your week.")
+    mc(pdf, ai.get("signature_sentence", "-"))
+
+    # ===== Top / Snapshot =====
     section_break(pdf, "Top Themes", "Where your energy is strongest right now.")
     mc(pdf, ", ".join(top3) if top3 else "-")
     draw_scores_barchart(pdf, scores)
 
-    # AI narrative sections
+    # ===== From your words =====
+    fyw = ai.get("from_your_words") or {}
+    if fyw.get("summary") or fyw.get("keepers"):
+        section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
+        if fyw.get("summary"): mc(pdf, fyw["summary"])
+        if fyw.get("keepers"):
+            setf(pdf, "B", 12); mc(pdf, "Keepers")
+            setf(pdf, "", 11)
+            for k in fyw["keepers"]:
+                mc(pdf, f'* "{k}"')
+
+    # ===== One-liners & Personal pledge =====
+    if ai.get("one_liners_to_keep"):
+        section_break(pdf, "One-liners to keep", "Tiny reminders that punch above their weight.")
+        bullet_list(pdf, ai["one_liners_to_keep"])
+    if ai.get("personal_pledge"):
+        section_break(pdf, "Personal pledge", "Your simple promise to yourself.")
+        mc(pdf, ai["personal_pledge"])
+
+    # ===== What this really says about you =====
+    if ai.get("what_this_really_says"):
+        section_break(pdf, "What this really says about you", "A kind, honest read of your pattern.")
+        mc(pdf, ai["what_this_really_says"])
+
+    # ===== Narrative (Insights, Why Now, Future Snapshot) =====
     if ai.get("deep_insight"):
         section_break(pdf, "Insights", "A practical, encouraging synthesis of your answers.")
         mc(pdf, ai["deep_insight"])
@@ -388,75 +417,58 @@ def make_pdf_bytes(
         section_break(pdf, "Future Snapshot", f"A short postcard from ~{horizon_weeks} weeks ahead.")
         mc(pdf, ai["future_snapshot"])
 
-    # Signature strengths
+    # ===== Coach sections =====
     if ai.get("signature_strengths"):
         section_break(pdf, "Signature Strengths", "Traits to lean on when momentum matters.")
         bullet_list(pdf, ai["signature_strengths"])
 
-    # Energy map
     em = ai.get("energy_map", {}) or {}
     if em.get("energizers") or em.get("drainers"):
         section_break(pdf, "Energy Map", "Name what fuels you, and what quietly drains you.")
         two_cols_lists(pdf, "Energizers", em.get("energizers", []), "Drainers", em.get("drainers", []))
 
-    # Hidden tensions
     if ai.get("hidden_tensions"):
         section_break(pdf, "Hidden Tensions", "Small frictions to watch with kindness.")
         bullet_list(pdf, ai["hidden_tensions"])
 
-    # Watch-out
     if ai.get("watch_out"):
         section_break(pdf, "Watch-out (gentle blind spot)", "A nudge to keep you steady.")
         mc(pdf, ai["watch_out"])
 
-    # Actions 7 days
     if ai.get("actions_7d"):
         section_break(pdf, "3 Next-step Actions (7 days)", "Tiny moves that compound quickly.")
         bullet_list(pdf, ai["actions_7d"])
 
-    # Implementation intentions
     if ai.get("impl_if_then"):
         section_break(pdf, "Implementation Intentions (If-Then)", "Pre-decide responses to common bumps.")
         bullet_list(pdf, ai["impl_if_then"])
 
-    # 1-week gentle plan
     if ai.get("plan_1_week"):
         section_break(pdf, "1-Week Gentle Plan", "A light structure you can actually follow.")
         bullet_list(pdf, ai["plan_1_week"])
 
-    # Balancing Opportunity
     if ai.get("balancing_opportunity"):
         section_break(pdf, "Balancing Opportunity", "Low themes to tenderly rebalance.")
         bullet_list(pdf, ai["balancing_opportunity"])
 
-    # Keep this in view
     if ai.get("keep_in_view"):
         section_break(pdf, "Keep This In View", "Tiny reminders that protect progress.")
         bullet_list(pdf, ai["keep_in_view"])
 
-    # Pointer to next page
     pdf.ln(4)
     setf(pdf, "B", 12); mc(pdf, "Next Page: Printable 'Signature Week - At a glance' + Tiny Progress Tracker")
     setf(pdf, "", 11); mc(pdf, "Tip: Put this on your fridge, desk, or phone notes.")
 
-    # Checklist page
+    # ===== Page 2: Signature Week & Tiny Progress =====
     pdf.add_page()
-    section_break(pdf, "Signature Week - At a glance", "Check off small wins that matter.")
-
-    tiny = ai.get("tiny_progress", []) or []
-    if not tiny:
-        tiny = ["Finish one rep", "Invite one person", "Take one 10m walk"]
-
+    section_break(pdf, "Signature Week - At a glance", "A simple plan you can print or screenshot.")
+    tiny = ai.get("tiny_progress", []) or ["Finish one rep", "Invite one person", "Take one 10m walk"]
     setf(pdf, "", 12)
     for t in tiny:
-        sc(pdf, 8, 8, "[ ]")
-        sc(pdf, 0, 8, t)
-        pdf.ln(8)
+        sc(pdf, 8, 8, "[ ]"); sc(pdf, 0, 8, t); pdf.ln(8)
 
     pdf.ln(4)
-    setf(pdf, "", 10)
-    mc(pdf, f"Requested for: {email or '-'}")
-
+    setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
     pdf.ln(6)
     setf(pdf, "", 9)
     mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
@@ -467,9 +479,7 @@ def make_pdf_bytes(
     return out
 
 
-# -------------------------
-# App UI
-# -------------------------
+# ---------- App UI ----------
 st.set_page_config(page_title="Life Minus Work — Questionnaire", page_icon="🧭", layout="centered")
 st.title("Life Minus Work — Questionnaire")
 
@@ -494,12 +504,8 @@ for i, q in enumerate(questions, start=1):
     labels_plus = labels + [WRITE_IN]
 
     prev = st.session_state["answers_by_qid"].get(q["id"])
-    if prev not in labels_plus:
-        prev_idx = 0
-    else:
-        prev_idx = labels_plus.index(prev)
-
-    sel = st.radio("Pick one", labels_plus, index=prev_idx, key=choice_key(q["id"]), label_visibility="collapsed")
+    idx = labels_plus.index(prev) if prev in labels_plus else 0
+    sel = st.radio("Pick one", labels_plus, index=idx, key=choice_key(q["id"]), label_visibility="collapsed")
     st.session_state["answers_by_qid"][q["id"]] = sel
 
     if sel == WRITE_IN:
@@ -512,7 +518,7 @@ for i, q in enumerate(questions, start=1):
             placeholder="Type here… (on mobile, tap outside to save)",
             height=90,
         )
-        # do NOT assign to st.session_state[ta_key]; store a copy in our own dict
+        # keep a copy in our dict (never assign to the widget key)
         st.session_state["free_by_qid"][q["id"]] = new_text
     else:
         st.session_state["free_by_qid"].pop(q["id"], None)
@@ -543,7 +549,6 @@ if submit:
         top3 = top_n_themes(scores, 3)
         free_responses = {qid: txt for qid, txt in st.session_state["free_by_qid"].items() if txt and txt.strip()}
 
-        # AI call (single big prompt)
         ai_sections, usage, raw_head = run_ai(
             first_name=st.session_state.get("first_name_input", first_name),
             horizon_weeks=horizon_weeks,
@@ -553,7 +558,6 @@ if submit:
             cap_tokens=AI_MAX_TOKENS_CAP,
         )
 
-        # Build PDF
         logo = here() / "Life-Minus-Work-Logo.webp"
         pdf_bytes = make_pdf_bytes(
             first_name=st.session_state.get("first_name_input", first_name),
