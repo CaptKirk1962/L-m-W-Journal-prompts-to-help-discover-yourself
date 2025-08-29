@@ -1,4 +1,4 @@
-# app.py — fpdf1 safe + AI re-enabled (Responses API), Latin-1 sanitization everywhere
+# app.py — fpdf 1.x safe + AI, write-ins, token diagnostics, no widget-key writes
 
 from __future__ import annotations
 import json
@@ -14,22 +14,25 @@ import streamlit as st
 from fpdf import FPDF
 from PIL import Image
 
-# ====== THEMES / SETTINGS ======
+# =========================
+# Themes & AI configuration
+# =========================
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
+
 FUTURE_WEEKS_MIN, FUTURE_WEEKS_MAX, FUTURE_WEEKS_DEFAULT = 2, 8, 4
 
 # AI knobs
 AI_ENABLED_DEFAULT = True
-AI_MODEL = "gpt-5-mini"         # keep your chosen model
-AI_MAX_TOKENS_CAP = 7000        # safe cap for deluxe report
-AI_MAX_TOKENS_FALLBACK = 6000   # one retry at a lower cap
-AI_TARGETS = {                  # word targets to guide the model
+AI_MODEL = "gpt-5-mini"         # your chosen model
+AI_MAX_TOKENS_CAP = 7000        # safe, rich report
+AI_MAX_TOKENS_FALLBACK = 6000   # one retry at lower cap
+AI_TARGETS = {
     "deep_insight": (400, 600),
     "why_now": (120, 180),
     "future_snapshot": (150, 220),
 }
 
-# Try to import OpenAI client
+# Try OpenAI client
 OPENAI_OK = False
 try:
     from openai import OpenAI
@@ -38,7 +41,9 @@ except Exception:
     OPENAI_OK = False
 
 
-# ====== FILES / LOADING ======
+# ===============
+# File utilities
+# ===============
 def here() -> Path:
     return Path(__file__).parent
 
@@ -58,29 +63,39 @@ def load_questions(filename="questions.json") -> Tuple[List[dict], List[str]]:
     return data["questions"], data.get("themes", THEMES)
 
 def q_version_hash(questions: List[dict]) -> str:
+    # Version using id + text, so reorders don’t break, content changes do
     core = [{"id": q["id"], "text": q["text"]} for q in questions]
     s = json.dumps(core, ensure_ascii=False)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
-# ====== STATE ======
+# ============================
+# State bootstrap & key helpers
+# ============================
 def ensure_state(questions: List[dict]):
     ver = q_version_hash(questions)
     if "answers_by_qid" not in st.session_state:
         st.session_state["answers_by_qid"] = {}
+    if "free_by_qid" not in st.session_state:
+        st.session_state["free_by_qid"] = {}
     if st.session_state.get("q_version") != ver:
-        old = st.session_state.get("answers_by_qid", {})
-        st.session_state["answers_by_qid"] = {q["id"]: old.get(q["id"]) for q in questions}
+        # migrate by id only; keep whatever matches
+        old_answers = st.session_state.get("answers_by_qid", {})
+        old_free = st.session_state.get("free_by_qid", {})
+        st.session_state["answers_by_qid"] = {q["id"]: old_answers.get(q["id"]) for q in questions}
+        st.session_state["free_by_qid"] = {q["id"]: old_free.get(q["id"], "") for q in questions}
         st.session_state["q_version"] = ver
 
 def choice_key(qid: str) -> str:
-    return f"{qid}__choice"
+    return f"{qid}__choice"   # radio widget key
 
 def free_key(qid: str) -> str:
-    return f"{qid}__free"
+    return f"{qid}__free"     # text_area widget key
 
 
-# ====== FPDF 1.x LATIN-1 SAFETY ======
+# ===================================
+# FPDF 1.x Latin-1 safety (no crashes)
+# ===================================
 LATIN1_MAP = {
     "—": "-", "–": "-", "―": "-",
     "“": '"', "”": '"', "„": '"',
@@ -112,12 +127,14 @@ def sc(pdf: "FPDF", w: float, h: float, text: str):
     pdf.cell(w, h, to_latin1(text))
 
 
-# ====== PDF HELPERS (fpdf1) ======
+# ============
+# PDF helpers
+# ============
 class PDF(FPDF):
     pass
 
 def setf(pdf: FPDF, style: str = "", size: int = 12):
-    pdf.set_font("Helvetica", style, size)  # Core14; safe for Latin-1
+    pdf.set_font("Helvetica", style, size)  # Core 14, Latin-1 OK in fpdf1
 
 def section_break(pdf: FPDF, title: str, description: str = ""):
     pdf.ln(3)
@@ -221,13 +238,16 @@ def make_pdf_bytes(
     if email:
         setf(pdf, "", 10); mc(pdf, f"Requested for: {email}")
 
+    # fpdf1 returns str; convert to bytes for Streamlit download_button
     out = pdf.output(dest="S")
     if isinstance(out, str):
         out = out.encode("latin-1", errors="ignore")
     return out
 
 
-# ====== SCORING ======
+# ==========
+# Scoring
+# ==========
 def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dict[str, int]:
     scores = {t: 0 for t in THEMES}
     for q in questions:
@@ -245,7 +265,9 @@ def top_n_themes(scores: Dict[str, int], n: int = 3) -> List[str]:
     return [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:n]]
 
 
-# ====== OPENAI GLUE ======
+# ==============
+# OpenAI glue
+# ==============
 def ai_enabled() -> bool:
     return AI_ENABLED_DEFAULT and OPENAI_OK and bool(os.getenv("OPENAI_API_KEY"))
 
@@ -287,7 +309,7 @@ def parse_json_from_text(text: str) -> Optional[dict]:
         return json.loads(text)
     except Exception:
         pass
-    # fenced
+    # fenced ```json
     m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.S | re.I)
     if m:
         try:
@@ -368,16 +390,18 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
             }
             return (sections, usage, raw_text[:800])
         except Exception as e2:
-            # Final fallback (concise, Latin-1 friendly)
+            # Final concise fallback (Latin-1 friendly)
             sections = {
                 "deep_insight": "You’re closer than you think. Start small, repeat, and protect the energy sources that actually move you.",
                 "why_now": "This season is asking for gentle focus and one lever at a time—so you can build momentum without burning out.",
                 "future_snapshot": f"In about {horizon_weeks} weeks, you’ve strung together tiny wins. Your days feel more yours—simpler, connected, and alive.",
             }
-            return (sections, usage, f"AI failed: {e1} | {e2}")  # raw_head contains errors
+            return (sections, usage, f"AI failed: {e1} | {e2}")  # raw_head holds error text
 
 
-# ====== STREAMLIT UI ======
+# =============
+# Streamlit App
+# =============
 st.set_page_config(page_title="Life Minus Work — Questionnaire", page_icon="🧭", layout="centered")
 st.title("Life Minus Work — Questionnaire")
 
@@ -390,14 +414,14 @@ st.write(
     "**Mobile:** Tap outside the text box to save."
 )
 
-# Future Snapshot horizon (clear label)
+# Future Snapshot horizon
 horizon_weeks = st.slider(
     "How far ahead should we imagine your Future Snapshot? (in weeks)",
     min_value=FUTURE_WEEKS_MIN, max_value=FUTURE_WEEKS_MAX, value=FUTURE_WEEKS_DEFAULT,
     help="This sets the time horizon for the 'Future Snapshot' story in your report."
 )
 
-# Q&A loop with optional write-in
+# Q&A with optional write-in (no writing to widget keys)
 for idx, q in enumerate(questions, start=1):
     st.subheader(f"Q{idx}. {q['text']}")
     labels = [c["label"] for c in q["choices"]]
@@ -421,7 +445,7 @@ for idx, q in enumerate(questions, start=1):
 
     if selected == WRITE_IN:
         ta_key = free_key(q["id"])
-        default_text = st.session_state.get(ta_key, "")
+        default_text = st.session_state["free_by_qid"].get(q["id"], "")
         new_text = st.text_area(
             "Your words (a sentence or two):",
             value=default_text,
@@ -429,9 +453,12 @@ for idx, q in enumerate(questions, start=1):
             placeholder="Type here… (on mobile, tap outside to save)",
             height=90
         )
-        st.session_state[ta_key] = new_text
+        # DO NOT write to st.session_state[ta_key] — that’s the widget key
+        # Store a copy in our separate dict
+        st.session_state["free_by_qid"][q["id"]] = new_text
     else:
-        st.session_state.pop(free_key(q["id"]), None)
+        # Clear our separate store for this qid
+        st.session_state["free_by_qid"].pop(q["id"], None)
 
 st.divider()
 
@@ -461,27 +488,13 @@ if submit_clicked:
         st.session_state["consent"] = True
 
         # Scores
-        scores = {t: 0 for t in THEMES}
-        for q in questions:
-            sel = st.session_state["answers_by_qid"].get(q["id"])
-            if not sel:
-                continue
-            for c in q["choices"]:
-                if c["label"] == sel:
-                    for k, v in c.get("weights", {}).items():
-                        scores[k] += int(v)
-                    break
+        scores = compute_scores(questions, st.session_state["answers_by_qid"])
+        top3 = top_n_themes(scores, 3)
 
-        top3 = [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+        # Free responses for AI context
+        free_responses = {qid: txt for qid, txt in st.session_state["free_by_qid"].items() if txt and txt.strip()}
 
-        # Gather free responses for AI context
-        free_responses = {}
-        for q in questions:
-            fr = st.session_state.get(free_key(q["id"]), "")
-            if fr and fr.strip():
-                free_responses[q["id"]] = fr.strip()
-
-        # AI call (robust)
+        # AI call
         sections, usage, raw_head = run_ai(
             first_name=st.session_state.get("first_name_input", first_name),
             horizon_weeks=horizon_weeks,
