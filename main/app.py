@@ -927,11 +927,11 @@ if st.session_state.get("preview_ready"):
 
                 # Capture email immediately (even if AI/PDF fails later)
                 try:
-                    sc = compute_scores(questions, st.session_state["answers_by_qid"])
+                    scores_for_log = compute_scores(questions, st.session_state["answers_by_qid"])
                     log_email_capture(
                         st.session_state.pending_email,
                         st.session_state.get("first_name_input", ""),
-                        {"scores": sc, "source": "verify"}
+                        {"scores": scores_for_log, "source": "verify"}
                     )
                 except Exception as e:
                     st.warning(f"(Email logging) {e}")
