@@ -35,6 +35,7 @@ AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-
 # Output token targets (can be tuned via secrets or env)
 AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "5000"))           # hard cap we pass to API
 DESIRED_OUTPUT_TOKENS = int(os.getenv("LW_OUTPUT_TOKENS", "4000"))    # what we aim for per completion
+FIVE_ONLY = os.getenv("LW_5_ONLY", st.secrets.get("LW_5_ONLY", "0")) == "1"
 
 # Fixed Future Snapshot horizon (~1 month)
 FUTURE_WEEKS_DEFAULT = 4
@@ -204,6 +205,21 @@ def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
     pdf.set_y(y + 2); hr(pdf, y_offset=0)
 
 # =============================================================================
+# List Normalizer (prevents gibberish bullets)
+# =============================================================================
+
+def as_list(v) -> List[str]:
+    """Coerce any AI field into a clean list of bullet strings."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if isinstance(v, str):
+        s = v.strip()
+        parts = re.split(r"(?:\r?\n|\s*[\u2022\u2023•\-–]\s+)", s)
+        parts = [p.strip(" .;") for p in parts if p and p.strip()]
+        return parts if len(parts) > 1 else [s]
+    return []
+
+# =============================================================================
 # Scoring
 # =============================================================================
 
@@ -211,7 +227,7 @@ def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dic
     scores = {t: 0 for t in THEMES}
     for q in questions:
         sel = answers_by_qid.get(q["id"])
-        if not sel: 
+        if not sel:
             continue
         for c in q["choices"]:
             if c["label"] == sel:
@@ -335,7 +351,7 @@ def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
     """
     Returns (ai_sections_dict, usage_dict, raw_text_head).
-    Records st.session_state['effective_model'].
+    Records st.session_state['effective_model'] and ['model_attempts'].
     """
     usage = {}
     prompt_ctx = {
@@ -349,6 +365,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     client = get_openai_client()
     if client is None:
         st.session_state["effective_model"] = "(no key / safe mode)"
+        st.session_state["model_attempts"] = [("(no client)", "skipped")]
         return _fallback_ai(scores), usage, raw_text
 
     system_msg = (
@@ -359,6 +376,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         "- 'insights' and 'why_now': 2–3 dense paragraphs each (5–8 sentences per paragraph).\n"
         "- 'future_snapshot': 8–12 vivid sentences as a short postcard from ~1 month ahead.\n"
         "- Lists (actions_7d, impl_if_then, plan_1_week, strengths, energizers/drainers): 6–10 items each, specific and actionable.\n"
+        "- All list fields MUST be JSON arrays of short strings (never a paragraph).\n"
         "- Keep language simple, humane, and encouraging.\n"
     )
     user_msg = (
@@ -374,13 +392,16 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         notes=json.dumps(scores_free or {}, ensure_ascii=False),
     )
 
-    # Prefer GPT-5 family; avoid 4o-mini; fall back to 4o if needed
-    models_to_try = [AI_MODEL, "gpt-5", "gpt-5-large", "gpt-5.1", "gpt-4o"]
-    last_err = None
+    # Prefer GPT-5 family; avoid 4o-mini; optional 5-only mode
+    models_to_try = [AI_MODEL, "gpt-5", "gpt-5-large", "gpt-5.1"]
+    if not FIVE_ONLY:
+        models_to_try.append("gpt-4o")
 
     # Aim for ~4k output tokens (bounded by cap/env)
     max_out = max(1200, min(DESIRED_OUTPUT_TOKENS, AI_MAX_TOKENS_CAP))
 
+    attempts = []
+    last_err = None
     for m in models_to_try:
         if not m:
             continue
@@ -407,17 +428,21 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
             if "top_themes" not in data or not isinstance(data["top_themes"], list):
                 data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
             for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
-                if key not in data: 
+                if key not in data:
                     raise ValueError("Missing key: " + key)
 
             st.session_state["effective_model"] = m
+            attempts.append((m, "ok"))
+            st.session_state["model_attempts"] = attempts
             return (data, usage, txt[:800])
         except Exception as e:
             last_err = e
+            attempts.append((m, f"error: {e}"))
             continue
 
     st.warning(f"AI call fell back to safe content: {last_err}")
     st.session_state["effective_model"] = "(fallback)"
+    st.session_state["model_attempts"] = attempts
     return _fallback_ai(scores), usage, raw_text
 
 # =============================================================================
@@ -527,7 +552,7 @@ def make_pdf_bytes(
         mc(pdf, fyw["summary"])
         if fyw.get("keepers"):
             section_title(pdf, "One-liners to keep"); mc(pdf, "Tiny reminders that punch above their weight.")
-            bullets(pdf, [str(x) for x in fyw["keepers"]])
+            bullets(pdf, as_list(fyw["keepers"]))
         hr(pdf)
 
     # Personal pledge
@@ -555,23 +580,23 @@ def make_pdf_bytes(
     # Strengths & Energy map
     if ai.get("signature_strengths"):
         section_title(pdf, "Signature Strengths"); mc(pdf, "Traits to lean on when momentum matters.")
-        bullets(pdf, [str(x) for x in ai["signature_strengths"]]); hr(pdf)
+        bullets(pdf, as_list(ai.get("signature_strengths"))); hr(pdf)
 
     emap = ai.get("energy_map") or {}
     if emap.get("energizers") or emap.get("drainers"):
         section_title(pdf, "Energy Map"); mc(pdf, "Name what fuels you, and what quietly drains you.")
         if emap.get("energizers"):
             setf(pdf, "B", 11); mc(pdf, "Energizers"); setf(pdf, "", 11)
-            bullets(pdf, [str(x) for x in emap["energizers"]])
+            bullets(pdf, as_list(emap.get("energizers")))
         if emap.get("drainers"):
             setf(pdf, "B", 11); mc(pdf, "Drainers"); setf(pdf, "", 11)
-            bullets(pdf, [str(x) for x in emap["drainers"]])
+            bullets(pdf, as_list(emap.get("drainers")))
         hr(pdf)
 
     # Tensions & Watch-out
     if ai.get("hidden_tensions"):
         section_title(pdf, "Hidden Tensions"); mc(pdf, "Small frictions to watch with kindness.")
-        bullets(pdf, [str(x) for x in ai["hidden_tensions"]]); hr(pdf)
+        bullets(pdf, as_list(ai.get("hidden_tensions"))); hr(pdf)
 
     if ai.get("watch_out"):
         section_title(pdf, "Watch-out (gentle blind spot)")
@@ -581,37 +606,37 @@ def make_pdf_bytes(
     # Actions & Plans
     if ai.get("actions_7d"):
         section_title(pdf, "3 Next-step Actions (7 days)"); mc(pdf, "Tiny moves that compound quickly.")
-        bullets(pdf, [str(x) for x in ai["actions_7d"]]); hr(pdf)
+        bullets(pdf, as_list(ai.get("actions_7d"))); hr(pdf)
 
     if ai.get("impl_if_then"):
         section_title(pdf, "Implementation Intentions (If-Then)")
         mc(pdf, "Pre-decide responses to common bumps.")
-        bullets(pdf, [str(x) for x in ai["impl_if_then"]]); hr(pdf)
+        bullets(pdf, as_list(ai.get("impl_if_then"))); hr(pdf)
 
     if ai.get("plan_1_week"):
         section_title(pdf, "1-Week Gentle Plan"); mc(pdf, "A light structure you can actually follow.")
-        bullets(pdf, [str(x) for x in ai["plan_1_week"]]); hr(pdf)
+        bullets(pdf, as_list(ai.get("plan_1_week"))); hr(pdf)
 
     if ai.get("balancing_opportunity"):
         section_title(pdf, "Balancing Opportunity"); mc(pdf, "Low themes to tenderly rebalance.")
-        bullets(pdf, [str(x) for x in ai["balancing_opportunity"]]); hr(pdf)
+        bullets(pdf, as_list(ai.get("balancing_opportunity"))); hr(pdf)
 
     if ai.get("keep_in_view"):
         section_title(pdf, "Keep This In View"); mc(pdf, "Tiny reminders that protect progress.")
-        bullets(pdf, [str(x) for x in ai["keep_in_view"]])
+        bullets(pdf, as_list(ai.get("keep_in_view")))
 
     # Page 2: Signature Week + Tiny Progress
     pdf.add_page()
     setf(pdf, "B", 16); mc(pdf, "Signature Week - At a glance")
     setf(pdf, "", 11); mc(pdf, "A simple plan you can print or screenshot. Check items off as you go.")
     pdf.ln(2)
-    for line in (ai.get("plan_1_week") or []):
+    for line in as_list(ai.get("plan_1_week")):
         checkbox_line(pdf, str(line))
     hr(pdf)
 
     setf(pdf, "B", 14); mc(pdf, "Tiny Progress Tracker")
     setf(pdf, "", 11); mc(pdf, "Three tiny milestones you can celebrate this week.")
-    for t in (ai.get("tiny_progress") or ["Tried one new thing", "Called someone after event", "Wrote one reflection"]):
+    for t in as_list(ai.get("tiny_progress") or ["Tried one new thing", "Called someone after event", "Wrote one reflection"]):
         checkbox_line(pdf, str(t))
 
     pdf.ln(6); setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
@@ -895,29 +920,3 @@ if st.session_state.get("preview_ready"):
             )
             with st.expander("Email me the PDF", expanded=False):
                 if st.button("Send report to my email"):
-                    try:
-                        send_email(
-                            to_addr=st.session_state.pending_email,
-                            subject="Your Life Minus Work — Reflection Report",
-                            text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
-                            html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
-                            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
-                        )
-                        st.success("We’ve emailed your report.")
-                    except Exception as e:
-                        st.error(f"Could not email the PDF. {e}")
-
-        # Debug
-        with st.expander("AI status (debug)", expanded=False):
-            eff = st.session_state.get("effective_model", "(unknown)")
-            st.write(f"AI enabled: {ai_enabled()}")
-            st.write(f"Requested model: {AI_MODEL}")
-            st.write(f"Effective model: {eff}")
-            st.write(f"Max tokens target: {DESIRED_OUTPUT_TOKENS} (cap {AI_MAX_TOKENS_CAP})")
-            usage = st.session_state.get("ai_usage") or {}
-            if usage:
-                st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
-            else:
-                st.write("No usage reported by SDK.")
-            st.write(f"Logo found: {st.session_state.get('logo_found', False)} at {st.session_state.get('logo_path', '(none)')}")
-            st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
