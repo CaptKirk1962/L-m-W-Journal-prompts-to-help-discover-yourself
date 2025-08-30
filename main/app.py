@@ -1,13 +1,10 @@
 # app.py — Life Minus Work (Streamlit)
-# Updates in this version:
-# - Default AI model -> "gpt-5-mini" (with alias support for "ChatGPT 5 mini")
-# - Much richer AI JSON schema (archetype, core_need, signature metaphor, insights, why_now, etc.)
-# - PDF layout restored to the fuller style (similar to your “33” report)
-# - Progress + heads-up note shown when generating full report
-# - Stable generation cache: once built, re-used across re-runs
-# - Lazy OpenAI import + Latin-1 PDF safety (no Unicode crashes)
-# - Email code gate + “no jump to top” verify flow kept
-# - Fixed Future Snapshot horizon hard-coded to ~1 month
+# Changes in this version:
+# - Tries AI models in order: gpt-5-mini → gpt-4o-mini → gpt-4o, records effective model in debug
+# - Keeps rich report layout (like your “33” PDF)
+# - Tightened logo header spacing; explicit debug note if logo missing
+# - Progress note about generation time kept
+# - Stable one-time generation cache; lazy OpenAI import; Latin-1 PDF safety; email gate flow
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, time, ssl, smtplib
@@ -177,11 +174,9 @@ def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     positive = [v for _, v in ordered if v > 0]
     max_pos = max(positive) if positive else 1
-
     left_x = pdf.get_x(); y = pdf.get_y()
     label_w = 40; bar_w_max = 118; bar_h = 5.0
-    pdf.set_fill_color(33, 150, 243)  # soft blue
-
+    pdf.set_fill_color(33, 150, 243)
     for theme, val in ordered:
         pdf.set_xy(left_x, y); sc(pdf, label_w, 6, theme)
         bar_x = left_x + label_w + 2
@@ -265,7 +260,6 @@ def _extract_json_blob(txt: str) -> str:
     except Exception:
         return "{}"
 
-# Rich schema to match the “33” report
 AI_SCHEMA_FIELDS = (
     "{archetype, core_need, signature_metaphor, signature_sentence, "
     "top_themes:[], insights, why_now, future_snapshot, "
@@ -277,9 +271,7 @@ AI_SCHEMA_FIELDS = (
 )
 
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
-    """
-    Returns (ai_sections_dict, usage_dict, raw_text_head)
-    """
+    """Return (ai_sections_dict, usage_dict, raw_text_head). Sets st.session_state['effective_model']."""
     usage = {}
     prompt_ctx = {
         "first_name": first_name or "",
@@ -291,118 +283,115 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
 
     client = get_openai_client()
     if client is None:
-        # Fallback content shaped like the rich schema
-        data = {
-            "archetype": "Bold Explorer",
-            "core_need": "space to try new selves",
-            "signature_metaphor": "a tango with possibility",
-            "signature_sentence": "You learn by stepping forward and listening to the rhythm around you.",
-            "top_themes": [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]],
-            "insights": (
-                "You move like someone who prefers the step to the map. Adventure leads; Growth and "
-                "Contribution need simple scaffolding so experiences become learning and trust."
-            ),
-            "why_now": (
-                "Early momentum is easier to shape than late habits. A few tiny anchors now will turn "
-                "spark into clarity and steady contribution."
-            ),
-            "future_snapshot": (
-                "One month from now you feel a quieter confidence. Small rituals after each adventure "
-                "leave a trail of learning and stronger bonds."
-            ),
-            "from_your_words": {
-                "summary": "Your notes point to rhythm, partnership, and small acts that make moments matter.",
-                "keepers": ["try new steps", "listen before leading", "turn play into learning"],
-            },
-            "one_liners_to_keep": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
-            "personal_pledge": "I will try one new adventure and call someone afterward.",
-            "what_this_really_says": (
-                "You're energized by novelty and expression; add tiny routines that capture insight and follow-up so "
-                "energy compounds into identity and contribution."
-            ),
-            "signature_strengths": ["seeks novelty", "social rhythm", "authentic expression", "decisive action"],
-            "energy_map": {
-                "energizers": ["new experiences", "shared adventures", "creative risks", "spontaneous plans", "storytelling"],
-                "drainers": ["endless routine", "vague obligations", "over-analysis", "long solitary stretches"],
-            },
-            "hidden_tensions": ["loves variety but avoids follow-through", "wants clarity yet resists structure", "connects intensely then withdraws"],
-            "watch_out": "Don't let the thrill of novelty replace small acts of responsibility that build trust and growth.",
-            "actions_7d": ["Plan one mini-adventure", "Invite someone to join", "Journal one identity insight"],
-            "impl_if_then": [
-                "If I crave novelty, then I will schedule a short experiment.",
-                "If I avoid feedback, then I will ask one trusted person.",
-                "If I feel restless, then I will reflect for five minutes.",
-            ],
-            "plan_1_week": [
-                "Choose one mini-adventure this week",
-                "Invite a friend to participate",
-                "Do a five-minute reflection afterward",
-                "Send a follow-up message within 48 hours",
-                "Note one learning in a simple log",
-                "Offer one small helpful action",
-            ],
-            "balancing_opportunity": ["Turn adventures into learning", "Translate experiences into small acts of contribution"],
-            "keep_in_view": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
-            "tiny_progress": ["Tried one new thing", "Called someone after event", "Wrote one reflection"],
-        }
-        return (data, usage, raw_text)
+        st.session_state["effective_model"] = "(no key / safe mode)"
+        return _fallback_ai(scores), usage, raw_text
 
-    try:
-        system_msg = (
-            "You are a precise reflection coach. "
-            f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}. "
-            "Write vivid, grounded, encouraging content (no fluff), using the user's theme scores and notes. "
-            "Make 'future_snapshot' a short postcard from ~1 month ahead."
-        )
-        user_msg = (
-            "Name: {name}\n"
-            "Horizon: about {weeks} weeks (~1 month)\n"
-            "Theme scores (higher = stronger energy): {scores}\n"
-            "From user's notes (optional): {notes}\n"
-            "Top themes should reflect the score order. Fill every field with specific, helpful content."
-        ).format(
-            name=first_name or "friend",
-            weeks=horizon_weeks,
-            scores=json.dumps(scores),
-            notes=json.dumps(scores_free or {}, ensure_ascii=False),
-        )
+    system_msg = (
+        "You are a precise reflection coach. "
+        f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}. "
+        "Write vivid, grounded, encouraging content (no fluff), using the user's theme scores and notes. "
+        "Make 'future_snapshot' a short postcard from ~1 month ahead."
+    )
+    user_msg = (
+        "Name: {name}\n"
+        "Horizon: about {weeks} weeks (~1 month)\n"
+        "Theme scores (higher = stronger energy): {scores}\n"
+        "From user's notes (optional): {notes}\n"
+        "Top themes should reflect the score order. Fill every field with specific, helpful content."
+    ).format(
+        name=first_name or "friend",
+        weeks=horizon_weeks,
+        scores=json.dumps(scores),
+        notes=json.dumps(scores_free or {}, ensure_ascii=False),
+    )
 
-        resp = client.chat.completions.create(
-            model=AI_MODEL or "gpt-5-mini",
-            temperature=0.7,
-            messages=[{"role": "system", "content": system_msg},
-                      {"role": "user", "content": user_msg}],
-            max_tokens=1200,
-        )
-        txt = (resp.choices[0].message.content or "").strip()
-        blob = _extract_json_blob(txt)
-        data = json.loads(blob)
+    models_to_try = [AI_MODEL, "gpt-4o-mini", "gpt-4o"]
+    last_err = None
+    for m in models_to_try:
+        if not m: continue
+        try:
+            resp = client.chat.completions.create(
+                model=m,
+                temperature=0.7,
+                messages=[{"role": "system", "content": system_msg},
+                          {"role": "user", "content": user_msg}],
+                max_tokens=1200,
+            )
+            txt = (resp.choices[0].message.content or "").strip()
+            blob = _extract_json_blob(txt)
+            data = json.loads(blob)
 
-        # usage object (SDK 1.x)
-        usage_obj = getattr(resp, "usage", None)
-        if usage_obj:
-            try:
+            usage_obj = getattr(resp, "usage", None)
+            if usage_obj:
                 usage = {
                     "input": getattr(usage_obj, "prompt_tokens", 0) or 0,
                     "output": getattr(usage_obj, "completion_tokens", 0) or 0,
                     "total": getattr(usage_obj, "total_tokens", 0) or 0,
                 }
-            except Exception:
-                usage = {}
 
-        # Ensure top_themes exists and matches score order if missing
-        if "top_themes" not in data or not isinstance(data["top_themes"], list):
-            data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+            if "top_themes" not in data or not isinstance(data["top_themes"], list):
+                data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+            # sanity keys
+            for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
+                if key not in data: raise ValueError("Missing key: " + key)
 
-        # Minimal validation
-        for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
-            if key not in data:
-                raise ValueError("Missing key: " + key)
+            st.session_state["effective_model"] = m
+            return (data, usage, txt[:800])
+        except Exception as e:
+            last_err = e
+            continue
 
-        return (data, usage, txt[:800])
-    except Exception as e:
-        st.warning(f"AI call fell back to safe content: {e}")
-        return run_ai(first_name, horizon_weeks, scores, scores_free)  # fallback rich payload
+    st.warning(f"AI call fell back to safe content: {last_err}")
+    st.session_state["effective_model"] = "(fallback)"
+    return _fallback_ai(scores), usage, raw_text
+
+def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
+    # Rich fallback shaped like target schema (so PDF still looks good)
+    return {
+        "archetype": "Bold Explorer",
+        "core_need": "space to try new selves",
+        "signature_metaphor": "a tango with possibility",
+        "signature_sentence": "You learn by stepping forward and listening to the rhythm around you.",
+        "top_themes": [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]],
+        "insights": ("You move like someone who prefers the step to the map. Adventure leads; Growth and "
+                     "Contribution need simple scaffolding so experiences become learning and trust."),
+        "why_now": ("Early momentum is easier to shape than late habits. A few tiny anchors now will turn "
+                    "spark into clarity and steady contribution."),
+        "future_snapshot": ("One month from now you feel a quieter confidence. Small rituals after each adventure "
+                            "leave a trail of learning and stronger bonds."),
+        "from_your_words": {
+            "summary": "Your notes point to rhythm, partnership, and small acts that make moments matter.",
+            "keepers": ["try new steps", "listen before leading", "turn play into learning"],
+        },
+        "one_liners_to_keep": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
+        "personal_pledge": "I will try one new adventure and call someone afterward.",
+        "what_this_really_says": ("You're energized by novelty and expression; add tiny routines that capture insight "
+                                  "and follow-up so energy compounds into identity and contribution."),
+        "signature_strengths": ["seeks novelty", "social rhythm", "authentic expression", "decisive action"],
+        "energy_map": {
+            "energizers": ["new experiences", "shared adventures", "creative risks", "spontaneous plans", "storytelling"],
+            "drainers": ["endless routine", "vague obligations", "over-analysis", "long solitary stretches"],
+        },
+        "hidden_tensions": ["loves variety but avoids follow-through", "wants clarity yet resists structure", "connects intensely then withdraws"],
+        "watch_out": "Don't let the thrill of novelty replace small acts of responsibility that build trust and growth.",
+        "actions_7d": ["Plan one mini-adventure", "Invite someone to join", "Journal one identity insight"],
+        "impl_if_then": [
+            "If I crave novelty, then I will schedule a short experiment.",
+            "If I avoid feedback, then I will ask one trusted person.",
+            "If I feel restless, then I will reflect for five minutes.",
+        ],
+        "plan_1_week": [
+            "Choose one mini-adventure this week",
+            "Invite a friend to participate",
+            "Do a five-minute reflection afterward",
+            "Send a follow-up message within 48 hours",
+            "Note one learning in a simple log",
+            "Offer one small helpful action",
+        ],
+        "balancing_opportunity": ["Turn adventures into learning", "Translate experiences into small acts of contribution"],
+        "keep_in_view": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
+        "tiny_progress": ["Tried one new thing", "Called someone after event", "Wrote one reflection"],
+    }
 
 # -----------------------------
 # Email Helpers (SMTP via Gmail)
@@ -438,7 +427,7 @@ def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
 
 # -----------------------------
-# PDF Builder (fuller layout like “33”)
+# PDF Builder (full layout like “33”)
 # -----------------------------
 
 def section_title(pdf: "PDF", title: str, size=14, top_margin=2):
@@ -460,18 +449,20 @@ def make_pdf_bytes(
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_page()
 
-    # Logo → title
-    y_after_logo = 12
+    # Logo → title (tighter spacing)
+    y_after_logo = 18
     logo = logo_path or (here() / "logo.png")
-    if logo.exists():
+    logo_found = False
+    if isinstance(logo, Path) and logo.exists():
         try:
             img = Image.open(logo).convert("RGBA")
             tmp = here() / "_logo_tmp.png"
             img.save(tmp, format="PNG")
             pdf.image(str(tmp), x=10, y=10, w=28)
-            y_after_logo = 44
+            y_after_logo = 26
+            logo_found = True
         except Exception:
-            y_after_logo = 24
+            y_after_logo = 20
     pdf.set_y(y_after_logo)
 
     # Header
@@ -493,7 +484,7 @@ def make_pdf_bytes(
     mc(pdf, ai.get("signature_sentence", "-"))
     hr(pdf)
 
-    # Top Themes + bar chart
+    # Top Themes + chart
     section_title(pdf, "Top Themes")
     mc(pdf, "Where your energy is strongest right now.")
     top3 = ai.get("top_themes") or [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
@@ -582,7 +573,7 @@ def make_pdf_bytes(
         section_title(pdf, "Keep This In View"); mc(pdf, "Tiny reminders that protect progress.")
         bullets(pdf, [str(x) for x in ai["keep_in_view"]])
 
-    # Page 2: Signature Week - At a glance + Tiny Progress Tracker
+    # Page 2: Signature Week + Tiny Progress
     pdf.add_page()
     setf(pdf, "B", 16); mc(pdf, "Signature Week - At a glance")
     setf(pdf, "", 11); mc(pdf, "A simple plan you can print or screenshot. Check items off as you go.")
@@ -603,10 +594,12 @@ def make_pdf_bytes(
     out = pdf.output(dest="S")
     if isinstance(out, str):
         out = out.encode("latin-1", errors="ignore")
+    # record logo presence for debug
+    st.session_state["logo_found"] = bool(logo_found)
     return out
 
 # -----------------------------
-# Streamlit UI (with startup guard)
+# Streamlit UI
 # -----------------------------
 
 st.set_page_config(page_title="Life Minus Work — Questionnaire", page_icon="🧭", layout="centered")
@@ -616,16 +609,13 @@ st.caption("✅ App booted. If you see this, imports & first render succeeded.")
 try:
     questions, _themes = load_questions("questions.json")
     ensure_state(questions)
-
     st.write(
         "Answer the questions, add your own reflections, and unlock a personalized PDF summary. "
         "**Desktop:** press Ctrl+Enter in text boxes to apply. **Mobile:** tap outside the box to save."
     )
-
-    # Fixed Future Snapshot horizon (no slider)
-    horizon_weeks = FUTURE_WEEKS_DEFAULT
+    horizon_weeks = FUTURE_WEEKS_DEFAULT  # fixed 1-month snapshot
 except Exception as e:
-    st.error("The app hit an error while starting up. Details below so it doesn't get stuck on the spinner.")
+    st.error("The app hit an error while starting up.")
     st.exception(e)
     st.stop()
 
@@ -635,12 +625,10 @@ for i, q in enumerate(questions, start=1):
     labels = [c["label"] for c in q["choices"]]
     WRITE_IN = "✍️ I'll write my own answer"
     labels_plus = labels + [WRITE_IN]
-
     prev = st.session_state["answers_by_qid"].get(q["id"])
     idx = labels_plus.index(prev) if prev in labels_plus else 0
     sel = st.radio("Pick one", labels_plus, index=idx, key=choice_key(q["id"]), label_visibility="collapsed")
     st.session_state["answers_by_qid"][q["id"]] = sel
-
     if sel == WRITE_IN:
         ta_key = free_key(q["id"])
         default_text = st.session_state["free_by_qid"].get(q["id"], "")
@@ -656,24 +644,21 @@ for i, q in enumerate(questions, start=1):
         st.session_state["free_by_qid"].pop(q["id"], None)
 
 st.divider()
-# (Future Snapshot explainer removed earlier as requested)
+# (Future Snapshot explainer removed earlier)
 
-# Submit basic answers to show Mini Report preview
+# Mini report trigger
 with st.form("mini_form"):
     first_name = st.text_input("Your first name (for the report greeting)", key="first_name_input", placeholder="First name")
     submit_preview = st.form_submit_button("Show My Mini Report")
-
 if submit_preview:
     st.session_state["preview_ready"] = True
 
-# -----------------------------
-# Mini Report (enhanced) + Email Gate
-# -----------------------------
+# Mini Report + Gate
 if st.session_state.get("preview_ready"):
     scores = compute_scores(questions, st.session_state["answers_by_qid"])
     top3 = top_n_themes(scores, 3)
 
-    # Derive up to 3 short "keepers" from free text
+    # keepers from free text
     free_texts = [txt.strip() for txt in (st.session_state.get("free_by_qid") or {}).values() if txt and txt.strip()]
     keepers = []
     for t in free_texts:
@@ -687,19 +672,16 @@ if st.session_state.get("preview_ready"):
     with st.container():
         st.subheader("Your Mini Report (Preview)")
         st.write(f"**Top themes:** {', '.join(top3) if top3 else '-'}")
-
         if scores:
             try:
                 st.bar_chart({k: v for k, v in sorted(scores.items(), key=lambda kv: kv[0])})
             except Exception:
                 items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
                 st.table({"Theme": [k for k, _ in items], "Score": [v for _, v in items]})
-
         if keepers:
             st.markdown("**From your words:**")
             for k in keepers:
                 st.markdown(f"- {k}")
-
         recs = []
         if "Connection" in top3:   recs.append("Invite someone for a 20-minute walk this week.")
         if "Growth" in top3:       recs.append("Schedule one 20-minute skill rep on your calendar.")
@@ -711,7 +693,6 @@ if st.session_state.get("preview_ready"):
             st.markdown("**Tiny actions to try this week:**")
             for r in recs[:3]:
                 st.markdown(f"- {r}")
-
         st.markdown("**Your next 7 days (teaser):**")
         for p in [
             "Mon: choose one lever and block 10 minutes",
@@ -719,7 +700,6 @@ if st.session_state.get("preview_ready"):
             "Wed: invite one person to join a quick activity",
         ]:
             st.markdown(f"- {p}")
-
         st.markdown("**What you’ll unlock with the full report:**")
         st.markdown(
             "- Your *postcard from 1 month ahead* (Future Snapshot)\n"
@@ -730,9 +710,7 @@ if st.session_state.get("preview_ready"):
         )
     st.caption("Unlock your complete Reflection Report to see your postcard from 1 month ahead, insights, plan & checklist.")
 
-    # -------------------------
-    # Email Gate State
-    # -------------------------
+    # Gate state
     if "verify_state" not in st.session_state:
         st.session_state.verify_state = "collect"  # collect -> sent -> verified
     if "pending_email" not in st.session_state:
@@ -749,7 +727,6 @@ if st.session_state.get("preview_ready"):
     st.write("We’ll email a 6-digit code to verify it’s really you. No spam—ever.")
     st.caption("Heads up: generating your full report is intensive and may take up to a minute.")
 
-    # Step A: Collect email & send code
     if st.session_state.verify_state == "collect":
         user_email = st.text_input("Your email", placeholder="you@example.com", key="gate_email")
         c1, c2 = st.columns([1, 1])
@@ -785,16 +762,15 @@ if st.session_state.get("preview_ready"):
                         )
                         st.success(f"We’ve emailed a code to {st.session_state.pending_email}.")
                         st.session_state.verify_state = "sent"
-                        st.rerun()  # show the code-entry field immediately
+                        st.rerun()
                     except Exception as e:
                         if DEV_SHOW_CODES:
-                            st.warning(f"(Dev Mode) Email not configured; using on-screen code: **{code}**")
+                            st.warning(f"(Dev Mode) Email not configured; on-screen code: **{code}**")
                             st.session_state.verify_state = "sent"
                             st.rerun()
                         else:
                             st.error(f"Couldn’t send the code. {e}")
 
-    # Step B: Enter code & verify
     elif st.session_state.verify_state == "sent":
         st.info(f"Enter the 6-digit code we emailed to **{st.session_state.pending_email}**.")
         v = st.text_input("Verification code", max_chars=6)
@@ -809,7 +785,6 @@ if st.session_state.get("preview_ready"):
             elif v.strip() == st.session_state.pending_code:
                 st.success("Verified! Your full report is unlocked.")
                 st.session_state.verify_state = "verified"
-                # no st.rerun(); we’ll render below immediately
             else:
                 st.error("That code didn’t match. Please try again.")
         if resend:
@@ -834,9 +809,8 @@ if st.session_state.get("preview_ready"):
                     else:
                         st.error(f"Couldn’t resend the code. {e}")
 
-    # ---- Verified → generate once, then reuse (stable cache) ----
+    # Verified → generate once, then reuse
     if st.session_state.verify_state == "verified":
-        # Build a stable key from inputs so we only generate once per set
         answers_by_qid = st.session_state.get("answers_by_qid", {})
         free_by_qid = st.session_state.get("free_by_qid", {})
         key_payload = {
@@ -847,21 +821,18 @@ if st.session_state.get("preview_ready"):
             "model": AI_MODEL,
         }
         report_key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
-
         need_build = (
             st.session_state.get("report_key") != report_key
             or st.session_state.get("pdf_bytes") is None
             or st.session_state.get("ai_sections") is None
         )
-
         if need_build:
             with st.status("Generating your report…", expanded=False) as s:
                 scores_build = compute_scores(questions, answers_by_qid)
                 free_responses = {qid: txt for qid, txt in (free_by_qid or {}).items() if txt and txt.strip()}
-
                 ai_sections, usage, raw_head = run_ai(
                     first_name=st.session_state.get("first_name_input", ""),
-                    horizon_weeks=horizon_weeks,
+                    horizon_weeks=FUTURE_WEEKS_DEFAULT,
                     scores=scores_build,
                     scores_free=free_responses,
                 )
@@ -871,7 +842,7 @@ if st.session_state.get("preview_ready"):
                     email=st.session_state.pending_email,
                     scores=scores_build,
                     ai=ai_sections,
-                    logo_path=(here() / "logo.png") if (here() / "logo.png").exists() else None,
+                    logo_path=(here() / "logo.png"),
                 )
                 st.session_state["report_key"] = report_key
                 st.session_state["pdf_bytes"] = pdf_bytes
@@ -885,7 +856,6 @@ if st.session_state.get("preview_ready"):
         st.success("Your email is verified.")
         st.subheader("Your Complete Reflection Report")
         st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
-
         pdf_bytes = st.session_state.get("pdf_bytes", b"")
         if pdf_bytes:
             st.download_button(
@@ -894,7 +864,6 @@ if st.session_state.get("preview_ready"):
                 file_name="LifeMinusWork_Reflection_Report.pdf",
                 mime="application/pdf",
             )
-
             with st.expander("Email me the PDF", expanded=False):
                 if st.button("Send report to my email"):
                     try:
@@ -909,13 +878,17 @@ if st.session_state.get("preview_ready"):
                     except Exception as e:
                         st.error(f"Could not email the PDF. {e}")
 
+        # Debug
         with st.expander("AI status (debug)", expanded=False):
+            eff = st.session_state.get("effective_model", "(unknown)")
             st.write(f"AI enabled: {ai_enabled()}")
-            st.write(f"Model: {AI_MODEL}")
+            st.write(f"Requested model: {AI_MODEL}")
+            st.write(f"Effective model: {eff}")
             st.write(f"Max tokens: {AI_MAX_TOKENS_CAP} (fallback {AI_MAX_TOKENS_FALLBACK})")
             usage = st.session_state.get("ai_usage") or {}
             if usage:
                 st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
             else:
-                st.write("No usage returned (fallback or SDK omitted usage fields).")
+                st.write("No usage reported by SDK.")
+            st.write(f"Logo found: {st.session_state.get('logo_found', False)}")
             st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
