@@ -1,10 +1,13 @@
 # app.py — Life Minus Work (Streamlit)
-# Fixes:
-# - Stable report generation: generate once per answers; reuse via session cache
-# - OpenAI usage parsing compatible with 'CompletionUsage' objects (no .get)
-# - Verified renders full report immediately (no jump-to-top, no second run needed)
-# - Inline progress while generating (no time promises)
-# - Prior features kept: mini report, email code gate, improved PDF, Latin-1 safety, lazy OpenAI import
+# Updates in this version:
+# - Default AI model -> "gpt-5-mini" (with alias support for "ChatGPT 5 mini")
+# - Much richer AI JSON schema (archetype, core_need, signature metaphor, insights, why_now, etc.)
+# - PDF layout restored to the fuller style (similar to your “33” report)
+# - Progress + heads-up note shown when generating full report
+# - Stable generation cache: once built, re-used across re-runs
+# - Lazy OpenAI import + Latin-1 PDF safety (no Unicode crashes)
+# - Email code gate + “no jump to top” verify flow kept
+# - Fixed Future Snapshot horizon hard-coded to ~1 month
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, time, ssl, smtplib
@@ -23,7 +26,20 @@ from PIL import Image
 
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
-AI_MODEL = os.getenv("LW_MODEL", st.secrets.get("LW_MODEL", "gpt-4o-mini"))
+def _resolve_model(raw: Optional[str]) -> str:
+    if not raw:
+        return "gpt-5-mini"
+    r = raw.strip().lower()
+    alias_map = {
+        "chatgpt 5 mini": "gpt-5-mini",
+        "chatgpt-5-mini": "gpt-5-mini",
+        "gpt 5 mini": "gpt-5-mini",
+        "gpt5mini": "gpt-5-mini",
+        "gpt-5 mini": "gpt-5-mini",
+    }
+    return alias_map.get(r, raw)
+
+AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-5-mini")))
 AI_MAX_TOKENS_CAP = 8000
 AI_MAX_TOKENS_FALLBACK = 7000
 
@@ -133,8 +149,8 @@ def to_latin1(text: str) -> str:
 def mc(pdf: "PDF", text: str, h=6):
     pdf.multi_cell(0, h, to_latin1(text))
 
-def sc(pdf: "PDF", w, h, text: str):
-    pdf.cell(w, h, to_latin1(text))
+def sc(pdf: "PDF", w, h, text: str, ln=0):
+    pdf.cell(w, h, to_latin1(text), ln=ln)
 
 # -----------------------------
 # PDF Drawing Helpers (bars, lines, checkboxes)
@@ -151,7 +167,7 @@ def hr(pdf: "PDF", y_offset: float = 2.0, gray: int = 220):
 def checkbox_line(pdf: "PDF", text: str, line_h: float = 7.5):
     x = pdf.get_x()
     y = pdf.get_y()
-    box = 4.5
+    box = 4.6
     pdf.rect(x, y + 1.6, box, box)
     pdf.set_xy(x + box + 3, y)
     mc(pdf, text, h=line_h)
@@ -163,8 +179,8 @@ def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
     max_pos = max(positive) if positive else 1
 
     left_x = pdf.get_x(); y = pdf.get_y()
-    label_w = 38; bar_w_max = 120; bar_h = 5.0
-    pdf.set_fill_color(30, 144, 255)
+    label_w = 40; bar_w_max = 118; bar_h = 5.0
+    pdf.set_fill_color(33, 150, 243)  # soft blue
 
     for theme, val in ordered:
         pdf.set_xy(left_x, y); sc(pdf, label_w, 6, theme)
@@ -187,8 +203,7 @@ def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dic
     scores = {t: 0 for t in THEMES}
     for q in questions:
         sel = answers_by_qid.get(q["id"])
-        if not sel:
-            continue
+        if not sel: continue
         for c in q["choices"]:
             if c["label"] == sel:
                 for k, w in (c.get("weights") or {}).items():
@@ -250,6 +265,17 @@ def _extract_json_blob(txt: str) -> str:
     except Exception:
         return "{}"
 
+# Rich schema to match the “33” report
+AI_SCHEMA_FIELDS = (
+    "{archetype, core_need, signature_metaphor, signature_sentence, "
+    "top_themes:[], insights, why_now, future_snapshot, "
+    "from_your_words:{summary, keepers:[]}, one_liners_to_keep:[], personal_pledge, "
+    "what_this_really_says, signature_strengths:[], "
+    "energy_map:{energizers:[], drainers:[]}, hidden_tensions:[], "
+    "watch_out, actions_7d:[], impl_if_then:[], plan_1_week:[], "
+    "balancing_opportunity:[], keep_in_view:[], tiny_progress:[]}"
+)
+
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
     """
     Returns (ai_sections_dict, usage_dict, raw_text_head)
@@ -265,69 +291,94 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
 
     client = get_openai_client()
     if client is None:
-        # fallback content
+        # Fallback content shaped like the rich schema
         data = {
-            "archetype": "Curious Connector",
-            "core_need": "Growth with people",
-            "signature_metaphor": "Compass in motion",
-            "signature_sentence": "Small shared adventures are your fastest route to growth.",
-            "deep_insight": "You are closer than you think. Focus on a few levers that energize you and remove one small drainer.",
-            "why_now": "This season rewards steady experiments, kind boundaries, and inviting others into your progress.",
-            "future_snapshot": "In 1 month you feel lighter and clearer. Small wins stacked into momentum.",
-            "from_your_words": {"summary": "Your notes highlight craving motion with meaning.", "keepers": ["Try one new thing", "Invite a friend"]},
-            "one_liners_to_keep": ["Small beats perfect", "Invite, don't wait", "Debrief 2 minutes"],
-            "personal_pledge": "I will try one small new thing each week.",
-            "what_this_really_says": "You thrive where novelty meets relationship. Design tiny anchors so experiences turn into growth.",
-            "signature_strengths": ["Curiosity in action", "People-first focus", "Follow-through under constraints"],
-            "energy_map": {"energizers": ["Tiny wins daily", "Learning in motion"], "drainers": ["Overcommitment", "Unclear next step"]},
-            "hidden_tensions": ["High standards vs limited time"],
-            "watch_out": "Beware scattering energy across too many half-starts.",
-            "actions_7d": ["One 20m skill rep", "One connection invite", "One micro-adventure"],
-            "impl_if_then": ["If distracted, then 10m timer", "If overwhelmed, then one step", "If stuck, then message ally"],
-            "plan_1_week": ["Mon choose lever", "Tue 20m rep", "Wed invite friend", "Thu reset space", "Fri micro-adventure", "Sat reflect 10m", "Sun prep next"],
-            "balancing_opportunity": ["Protect calm blocks", "Batch small chores"],
-            "keep_in_view": ["Small > perfect", "Ask for help"],
-            "tiny_progress": ["Finish one rep", "Send one invite", "Take one walk"],
+            "archetype": "Bold Explorer",
+            "core_need": "space to try new selves",
+            "signature_metaphor": "a tango with possibility",
+            "signature_sentence": "You learn by stepping forward and listening to the rhythm around you.",
+            "top_themes": [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]],
+            "insights": (
+                "You move like someone who prefers the step to the map. Adventure leads; Growth and "
+                "Contribution need simple scaffolding so experiences become learning and trust."
+            ),
+            "why_now": (
+                "Early momentum is easier to shape than late habits. A few tiny anchors now will turn "
+                "spark into clarity and steady contribution."
+            ),
+            "future_snapshot": (
+                "One month from now you feel a quieter confidence. Small rituals after each adventure "
+                "leave a trail of learning and stronger bonds."
+            ),
+            "from_your_words": {
+                "summary": "Your notes point to rhythm, partnership, and small acts that make moments matter.",
+                "keepers": ["try new steps", "listen before leading", "turn play into learning"],
+            },
+            "one_liners_to_keep": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
+            "personal_pledge": "I will try one new adventure and call someone afterward.",
+            "what_this_really_says": (
+                "You're energized by novelty and expression; add tiny routines that capture insight and follow-up so "
+                "energy compounds into identity and contribution."
+            ),
+            "signature_strengths": ["seeks novelty", "social rhythm", "authentic expression", "decisive action"],
+            "energy_map": {
+                "energizers": ["new experiences", "shared adventures", "creative risks", "spontaneous plans", "storytelling"],
+                "drainers": ["endless routine", "vague obligations", "over-analysis", "long solitary stretches"],
+            },
+            "hidden_tensions": ["loves variety but avoids follow-through", "wants clarity yet resists structure", "connects intensely then withdraws"],
+            "watch_out": "Don't let the thrill of novelty replace small acts of responsibility that build trust and growth.",
+            "actions_7d": ["Plan one mini-adventure", "Invite someone to join", "Journal one identity insight"],
+            "impl_if_then": [
+                "If I crave novelty, then I will schedule a short experiment.",
+                "If I avoid feedback, then I will ask one trusted person.",
+                "If I feel restless, then I will reflect for five minutes.",
+            ],
+            "plan_1_week": [
+                "Choose one mini-adventure this week",
+                "Invite a friend to participate",
+                "Do a five-minute reflection afterward",
+                "Send a follow-up message within 48 hours",
+                "Note one learning in a simple log",
+                "Offer one small helpful action",
+            ],
+            "balancing_opportunity": ["Turn adventures into learning", "Translate experiences into small acts of contribution"],
+            "keep_in_view": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
+            "tiny_progress": ["Tried one new thing", "Called someone after event", "Wrote one reflection"],
         }
         return (data, usage, raw_text)
 
     try:
         system_msg = (
-            "You are a concise reflection coach. "
-            "Return ONLY a compact JSON object with fields: "
-            "{archetype, core_need, signature_metaphor, signature_sentence, deep_insight, why_now, "
-            "future_snapshot, from_your_words:{summary, keepers:[]}, one_liners_to_keep:[], personal_pledge, "
-            "what_this_really_says, signature_strengths:[], energy_map:{energizers:[], drainers:[]}, "
-            "hidden_tensions:[], watch_out, actions_7d:[], impl_if_then:[], plan_1_week:[], "
-            "balancing_opportunity:[], keep_in_view:[], tiny_progress:[]}. "
-            "Keep it specific and concrete. Do not include markdown."
+            "You are a precise reflection coach. "
+            f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}. "
+            "Write vivid, grounded, encouraging content (no fluff), using the user's theme scores and notes. "
+            "Make 'future_snapshot' a short postcard from ~1 month ahead."
         )
         user_msg = (
             "Name: {name}\n"
             "Horizon: about {weeks} weeks (~1 month)\n"
-            "Theme scores (higher means stronger energy): {scores}\n"
+            "Theme scores (higher = stronger energy): {scores}\n"
             "From user's notes (optional): {notes}\n"
-            "Write the JSON described above, filling each field with helpful, specific content. "
-            "Make 'future_snapshot' a short postcard from 1 month ahead."
+            "Top themes should reflect the score order. Fill every field with specific, helpful content."
         ).format(
             name=first_name or "friend",
             weeks=horizon_weeks,
             scores=json.dumps(scores),
-            notes=json.dumps(scores_free or {}, ensure_ascii=False)
+            notes=json.dumps(scores_free or {}, ensure_ascii=False),
         )
 
         resp = client.chat.completions.create(
-            model=AI_MODEL or "gpt-4o-mini",
+            model=AI_MODEL or "gpt-5-mini",
             temperature=0.7,
             messages=[{"role": "system", "content": system_msg},
                       {"role": "user", "content": user_msg}],
-            max_tokens=1100,
+            max_tokens=1200,
         )
         txt = (resp.choices[0].message.content or "").strip()
         blob = _extract_json_blob(txt)
         data = json.loads(blob)
 
-        # ---- FIX: usage is an object in SDK 1.x (not a dict)
+        # usage object (SDK 1.x)
         usage_obj = getattr(resp, "usage", None)
         if usage_obj:
             try:
@@ -338,14 +389,20 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
                 }
             except Exception:
                 usage = {}
-        # ----
 
-        if not isinstance(data, dict) or "future_snapshot" not in data:
-            raise ValueError("Model did not return expected JSON keys.")
+        # Ensure top_themes exists and matches score order if missing
+        if "top_themes" not in data or not isinstance(data["top_themes"], list):
+            data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+
+        # Minimal validation
+        for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
+            if key not in data:
+                raise ValueError("Missing key: " + key)
+
         return (data, usage, txt[:800])
     except Exception as e:
         st.warning(f"AI call fell back to safe content: {e}")
-        return run_ai(first_name, horizon_weeks, scores, scores_free)  # fallback path above
+        return run_ai(first_name, horizon_weeks, scores, scores_free)  # fallback rich payload
 
 # -----------------------------
 # Email Helpers (SMTP via Gmail)
@@ -381,28 +438,31 @@ def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
 
 # -----------------------------
-# PDF Builder (improved look)
+# PDF Builder (fuller layout like “33”)
 # -----------------------------
 
-class PDFDoc(PDF):  # alias in case FPDF customization expands later
-    pass
+def section_title(pdf: "PDF", title: str, size=14, top_margin=2):
+    pdf.ln(top_margin)
+    setf(pdf, "B", size); mc(pdf, title); setf(pdf, "", 11)
+
+def bullets(pdf: "PDF", items: List[str]):
+    for it in items:
+        mc(pdf, f"- {it}")
 
 def make_pdf_bytes(
     first_name: str,
     email: str,
     scores: Dict[str, int],
-    top3: List[str],
     ai: Dict[str, Any],
-    horizon_weeks: int,
     logo_path: Optional[Path] = None
 ) -> bytes:
-    pdf = PDFDoc()
+    pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_page()
 
     # Logo → title
     y_after_logo = 12
-    logo = here() / "logo.png"
+    logo = logo_path or (here() / "logo.png")
     if logo.exists():
         try:
             img = Image.open(logo).convert("RGBA")
@@ -416,66 +476,129 @@ def make_pdf_bytes(
 
     # Header
     setf(pdf, "B", 18); mc(pdf, "Life Minus Work - Reflection Report", h=9)
-    setf(pdf, "", 12); mc(pdf, f"Hi {first_name or 'there'},"); hr(pdf)
+    setf(pdf, "", 12); mc(pdf, f"Hi {first_name or 'there'},")
+    hr(pdf)
+
+    # Archetype cluster
+    section_title(pdf, "Archetype"); mc(pdf, "A simple lens for your pattern.")
+    setf(pdf, "B", 12); mc(pdf, ai.get("archetype", "-")); setf(pdf, "", 11)
+
+    section_title(pdf, "Core Need"); mc(pdf, "The fuel that keeps your effort meaningful.")
+    mc(pdf, ai.get("core_need", "-"))
+
+    section_title(pdf, "Signature Metaphor"); mc(pdf, "A mental image to remember your mode.")
+    mc(pdf, ai.get("signature_metaphor", "-"))
+
+    section_title(pdf, "Signature Sentence"); mc(pdf, "One clean line to orient your week.")
+    mc(pdf, ai.get("signature_sentence", "-"))
+    hr(pdf)
 
     # Top Themes + bar chart
-    setf(pdf, "B", 14); mc(pdf, "Top Themes"); setf(pdf, "", 11)
+    section_title(pdf, "Top Themes")
     mc(pdf, "Where your energy is strongest right now.")
+    top3 = ai.get("top_themes") or [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
     if top3:
-        setf(pdf, "B", 12); mc(pdf, ", ".join(top3))
+        setf(pdf, "B", 12); mc(pdf, ", ".join(top3)); setf(pdf, "", 11)
     draw_scores_barchart(pdf, scores)
 
     # From your words
     fyw = ai.get("from_your_words") or {}
     if fyw.get("summary"):
-        setf(pdf, "B", 14); mc(pdf, "From your words"); setf(pdf, "", 11)
+        section_title(pdf, "From your words")
         mc(pdf, "We pulled a few cues from what you typed.")
-        mc(pdf, fyw["summary"]); hr(pdf)
-
-    # Narrative blocks
-    if ai.get("future_snapshot"):
-        setf(pdf, "B", 14); mc(pdf, "Postcard from 1 month ahead"); setf(pdf, "", 11); mc(pdf, ai["future_snapshot"]); hr(pdf)
-    if ai.get("deep_insight"):
-        setf(pdf, "B", 14); mc(pdf, "What this really says"); setf(pdf, "", 11); mc(pdf, ai["deep_insight"]); hr(pdf)
-
-    # Action blocks
-    if ai.get("actions_7d"):
-        setf(pdf, "B", 14); mc(pdf, "Next steps (7 days)"); setf(pdf, "", 11)
-        for a in ai["actions_7d"]:
-            mc(pdf, f"- {a}")
+        mc(pdf, fyw["summary"])
+        if fyw.get("keepers"):
+            section_title(pdf, "One-liners to keep"); mc(pdf, "Tiny reminders that punch above their weight.")
+            bullets(pdf, [str(x) for x in fyw["keepers"]])
         hr(pdf)
+
+    # Personal pledge
+    if ai.get("personal_pledge"):
+        section_title(pdf, "Personal pledge"); mc(pdf, "Your simple promise to yourself.")
+        mc(pdf, ai["personal_pledge"]); hr(pdf)
+
+    # What this really says + Insights + Why Now + Future Snapshot
+    if ai.get("what_this_really_says"):
+        section_title(pdf, "What this really says about you")
+        mc(pdf, ai["what_this_really_says"]); hr(pdf)
+
+    if ai.get("insights"):
+        section_title(pdf, "Insights"); mc(pdf, "A practical, encouraging synthesis of your answers.")
+        mc(pdf, ai["insights"]); hr(pdf)
+
+    if ai.get("why_now"):
+        section_title(pdf, "Why Now"); mc(pdf, "Why these themes may be active in this season.")
+        mc(pdf, ai["why_now"]); hr(pdf)
+
+    if ai.get("future_snapshot"):
+        section_title(pdf, "Future Snapshot"); mc(pdf, "A short postcard from 1 month ahead.")
+        mc(pdf, ai["future_snapshot"]); hr(pdf)
+
+    # Strengths & Energy map
+    if ai.get("signature_strengths"):
+        section_title(pdf, "Signature Strengths"); mc(pdf, "Traits to lean on when momentum matters.")
+        bullets(pdf, [str(x) for x in ai["signature_strengths"]]); hr(pdf)
+
+    emap = ai.get("energy_map") or {}
+    if emap.get("energizers") or emap.get("drainers"):
+        section_title(pdf, "Energy Map"); mc(pdf, "Name what fuels you, and what quietly drains you.")
+        if emap.get("energizers"):
+            setf(pdf, "B", 11); mc(pdf, "Energizers"); setf(pdf, "", 11)
+            bullets(pdf, [str(x) for x in emap["energizers"]])
+        if emap.get("drainers"):
+            setf(pdf, "B", 11); mc(pdf, "Drainers"); setf(pdf, "", 11)
+            bullets(pdf, [str(x) for x in emap["drainers"]])
+        hr(pdf)
+
+    # Tensions & Watch-out
+    if ai.get("hidden_tensions"):
+        section_title(pdf, "Hidden Tensions"); mc(pdf, "Small frictions to watch with kindness.")
+        bullets(pdf, [str(x) for x in ai["hidden_tensions"]]); hr(pdf)
+
+    if ai.get("watch_out"):
+        section_title(pdf, "Watch-out (gentle blind spot)")
+        mc(pdf, "A nudge to keep you steady.")
+        mc(pdf, ai["watch_out"]); hr(pdf)
+
+    # Actions & Plans
+    if ai.get("actions_7d"):
+        section_title(pdf, "3 Next-step Actions (7 days)"); mc(pdf, "Tiny moves that compound quickly.")
+        bullets(pdf, [str(x) for x in ai["actions_7d"]]); hr(pdf)
 
     if ai.get("impl_if_then"):
-        setf(pdf, "B", 14); mc(pdf, "If-Then plan"); setf(pdf, "", 11)
-        for a in ai["impl_if_then"]:
-            mc(pdf, f"- {a}")
-        hr(pdf)
+        section_title(pdf, "Implementation Intentions (If-Then)")
+        mc(pdf, "Pre-decide responses to common bumps.")
+        bullets(pdf, [str(x) for x in ai["impl_if_then"]]); hr(pdf)
 
-    # Page 2: Signature Week + Tiny Progress
+    if ai.get("plan_1_week"):
+        section_title(pdf, "1-Week Gentle Plan"); mc(pdf, "A light structure you can actually follow.")
+        bullets(pdf, [str(x) for x in ai["plan_1_week"]]); hr(pdf)
+
+    if ai.get("balancing_opportunity"):
+        section_title(pdf, "Balancing Opportunity"); mc(pdf, "Low themes to tenderly rebalance.")
+        bullets(pdf, [str(x) for x in ai["balancing_opportunity"]]); hr(pdf)
+
+    if ai.get("keep_in_view"):
+        section_title(pdf, "Keep This In View"); mc(pdf, "Tiny reminders that protect progress.")
+        bullets(pdf, [str(x) for x in ai["keep_in_view"]])
+
+    # Page 2: Signature Week - At a glance + Tiny Progress Tracker
     pdf.add_page()
-    setf(pdf, "B", 16); mc(pdf, "Your Signature Week")
-    setf(pdf, "", 11); mc(pdf, "Use this as a simple checklist.")
+    setf(pdf, "B", 16); mc(pdf, "Signature Week - At a glance")
+    setf(pdf, "", 11); mc(pdf, "A simple plan you can print or screenshot. Check items off as you go.")
     pdf.ln(2)
-    for line in (ai.get("plan_1_week") or [
-        "Mon choose lever",
-        "Tue 20m rep",
-        "Wed invite friend",
-        "Thu reset space",
-        "Fri micro-adventure",
-        "Sat reflect 10m",
-        "Sun prep next",
-    ]):
-        checkbox_line(pdf, line)
+    for line in (ai.get("plan_1_week") or []):
+        checkbox_line(pdf, str(line))
     hr(pdf)
 
     setf(pdf, "B", 14); mc(pdf, "Tiny Progress Tracker")
-    setf(pdf, "", 11); mc(pdf, "Three small milestones to celebrate this week.")
-    for t in (ai.get("tiny_progress") or ["Finish one rep", "Send one invite", "Take one walk"]):
-        checkbox_line(pdf, t)
+    setf(pdf, "", 11); mc(pdf, "Three tiny milestones you can celebrate this week.")
+    for t in (ai.get("tiny_progress") or ["Tried one new thing", "Called someone after event", "Wrote one reflection"]):
+        checkbox_line(pdf, str(t))
 
     pdf.ln(6); setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
     pdf.ln(6); setf(pdf, "", 9)
-    mc(pdf, "Life Minus Work - This report is a starting point for reflection. Nothing here is medical or financial advice.")
+    mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
 
     out = pdf.output(dest="S")
     if isinstance(out, str):
@@ -558,10 +681,8 @@ if st.session_state.get("preview_ready"):
             s = line.strip()
             if 3 <= len(s) <= 80:
                 keepers.append(s)
-                if len(keepers) >= 3:
-                    break
-        if len(keepers) >= 3:
-            break
+                if len(keepers) >= 3: break
+        if len(keepers) >= 3: break
 
     with st.container():
         st.subheader("Your Mini Report (Preview)")
@@ -582,7 +703,7 @@ if st.session_state.get("preview_ready"):
         recs = []
         if "Connection" in top3:   recs.append("Invite someone for a 20-minute walk this week.")
         if "Growth" in top3:       recs.append("Schedule one 20-minute skill rep on your calendar.")
-        if "Peace" in top3:        recs.append("Block two 15-minute quiet blocks - phone away.")
+        if "Peace" in top3:        recs.append("Block two 15-minute quiet blocks—phone away.")
         if "Identity" in top3:     recs.append("Draft a 3-line purpose that feels true today.")
         if "Adventure" in top3:    recs.append("Plan one micro-adventure within 30 minutes from home.")
         if "Contribution" in top3: recs.append("Offer a 30-minute help session to someone this week.")
@@ -603,9 +724,9 @@ if st.session_state.get("preview_ready"):
         st.markdown(
             "- Your *postcard from 1 month ahead* (Future Snapshot)\n"
             "- Insights & Why Now (personalized narrative)\n"
-            "- 3 next-step actions + If-Then plan\n"
-            "- Energy Map (energizers & drainers)\n"
-            "- Printable 'Signature Week' checklist page"
+            "- Signature strengths, Energy map, Hidden tensions & Watch-out\n"
+            "- 3 actions + If-Then plan + 1-week gentle plan\n"
+            "- Printable 'Signature Week' checklist page + Tiny progress tracker"
         )
     st.caption("Unlock your complete Reflection Report to see your postcard from 1 month ahead, insights, plan & checklist.")
 
@@ -626,6 +747,7 @@ if st.session_state.get("preview_ready"):
     st.divider()
     st.subheader("Unlock your complete Reflection Report")
     st.write("We’ll email a 6-digit code to verify it’s really you. No spam—ever.")
+    st.caption("Heads up: generating your full report is intensive and may take up to a minute.")
 
     # Step A: Collect email & send code
     if st.session_state.verify_state == "collect":
@@ -712,7 +834,7 @@ if st.session_state.get("preview_ready"):
                     else:
                         st.error(f"Couldn’t resend the code. {e}")
 
-    # ---- Always check after the form: if verified, ensure report is generated once & rendered ----
+    # ---- Verified → generate once, then reuse (stable cache) ----
     if st.session_state.verify_state == "verified":
         # Build a stable key from inputs so we only generate once per set
         answers_by_qid = st.session_state.get("answers_by_qid", {})
@@ -723,7 +845,6 @@ if st.session_state.get("preview_ready"):
             "answers": answers_by_qid,
             "free": free_by_qid,
             "model": AI_MODEL,
-            "horizon_weeks": horizon_weeks,
         }
         report_key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -736,7 +857,6 @@ if st.session_state.get("preview_ready"):
         if need_build:
             with st.status("Generating your report…", expanded=False) as s:
                 scores_build = compute_scores(questions, answers_by_qid)
-                top3_build = top_n_themes(scores_build, 3)
                 free_responses = {qid: txt for qid, txt in (free_by_qid or {}).items() if txt and txt.strip()}
 
                 ai_sections, usage, raw_head = run_ai(
@@ -750,17 +870,13 @@ if st.session_state.get("preview_ready"):
                     first_name=st.session_state.get("first_name_input", ""),
                     email=st.session_state.pending_email,
                     scores=scores_build,
-                    top3=top3_build,
                     ai=ai_sections,
-                    horizon_weeks=horizon_weeks,
                     logo_path=(here() / "logo.png") if (here() / "logo.png").exists() else None,
                 )
-
                 st.session_state["report_key"] = report_key
                 st.session_state["pdf_bytes"] = pdf_bytes
                 st.session_state["ai_sections"] = ai_sections
                 st.session_state["scores_final"] = scores_build
-                st.session_state["top3_final"] = top3_build
                 st.session_state["ai_usage"] = usage
                 st.session_state["raw_head"] = raw_head
                 s.update(label="Report ready.", state="complete")
