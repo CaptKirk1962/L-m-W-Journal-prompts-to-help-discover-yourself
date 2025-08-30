@@ -1,11 +1,9 @@
 # app.py — Life Minus Work (Streamlit)
-# Features:
-# - Future Snapshot fixed to "1 month ahead" (no weeks slider)
-# - Mini-report preview, gated full report via 6-digit email verification
-# - Send emails from Gmail via SMTP (App Password)
-# - Safe Mode for AI (bypass OpenAI calls unless LW_SAFE_MODE=0 and OPENAI_API_KEY present)
-# - Robust PDF builder (2 pages, bars, coach sections), Latin-1 safe for fpdf 1.x
-# - Hardened questions loader with fallback
+# Notes:
+# - Fixes UnicodeEncodeError in FPDF by sanitizing to Latin-1 for ALL PDF text
+# - Uses ASCII-safe characters in PDF (bars '#', checkbox '[ ]', hyphens '-')
+# - Keeps your email-gated flow with st.rerun() after 'sent' and 'verified'
+# - Enriched Mini Report preview remains
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, textwrap, time, ssl, smtplib
@@ -90,7 +88,6 @@ def load_questions(filename="questions.json") -> Tuple[List[dict], List[str]]:
         return fallback, THEMES
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        # expected: {"questions":[...], "themes":[...]} or just [...]
         if isinstance(data, dict) and "questions" in data:
             return data["questions"], data.get("themes", THEMES)
         elif isinstance(data, list):
@@ -106,11 +103,47 @@ def slug(s: str) -> str:
     s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")
     return s.lower()
 
+class PDF(FPDF):
+    def header(self):
+        pass
+
 def setf(pdf: "PDF", style="", size=11):
     pdf.set_font("Helvetica", style=style, size=size)
 
+# -----------------------------
+# FPDF Latin-1 Safety
+# -----------------------------
+
+LATIN1_MAP = {
+    "—": "-", "–": "-", "―": "-",
+    "“": '"', "”": '"', "„": '"',
+    "’": "'", "‘": "'", "‚": "'",
+    "•": "-", "·": "-", "∙": "-",
+    "…": "...",
+    "□": "[ ]", "✓": "v", "✔": "v", "✗": "x", "✘": "x",
+    "•": "-", "★": "*", "☆": "*",
+    "█": "#", "■": "#", "▪": "-",
+    "\u00a0": " ", "\u200b": "",
+}
+
+def to_latin1(text: str) -> str:
+    if not isinstance(text, str):
+        text = str(text)
+    t = unicodedata.normalize("NFKD", text)
+    for k, v in LATIN1_MAP.items():
+        t = t.replace(k, v)
+    try:
+        t = t.encode("latin-1", errors="ignore").decode("latin-1")
+    except Exception:
+        t = t.encode("ascii", errors="ignore").decode("ascii")
+    t = re.sub(r"(\S{80})\S+", r"\1", t)  # avoid very long unbreakable tokens
+    return t
+
 def mc(pdf: "PDF", text: str, h=6):
-    pdf.multi_cell(0, h, text)
+    pdf.multi_cell(0, h, to_latin1(text))
+
+def sc(pdf: "PDF", w, h, text: str):
+    pdf.cell(w, h, to_latin1(text))
 
 def section_break(pdf: "PDF", title: str, subtitle: str = ""):
     pdf.ln(4)
@@ -122,15 +155,11 @@ def section_break(pdf: "PDF", title: str, subtitle: str = ""):
     pdf.ln(2)
 
 def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
-    # quick ascii-ish bars in PDF
+    # ASCII bars to be Latin-1 safe
     setf(pdf, "", 11)
     for k, v in scores.items():
-        bar = "█" * max(1, int(v))
-        mc(pdf, f"{k:12} {bar}")
-
-class PDF(FPDF):
-    def header(self):
-        pass
+        bar = "#" * max(1, int(v)) if v > 0 else ""
+        mc(pdf, f"{k:12} {bar} {v}")
 
 def here_logo() -> Path:
     return here() / "logo.png"
@@ -192,7 +221,6 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     usage = {}
     raw_text = ""
 
-    # Prepare a faux prompt/context (kept short)
     prompt = {
         "first_name": first_name or "",
         "horizon_weeks": horizon_weeks,
@@ -202,7 +230,6 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     raw_text = json.dumps(prompt)[:800]
 
     if not ai_enabled():
-        # concise fallback with month phrasing
         data = {
             "archetype": "Curious Connector",
             "core_need": "Growth with people",
@@ -228,11 +255,9 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         }
         return (data, usage, raw_text[:800])
 
-    # Real OpenAI call (if enabled)
     try:
         client = OpenAI()
-        # (Your real prompt/response code would go here)
-        # Stubbed to return the same fallback structure for now.
+        # (Real call would go here.) Returning same structure for now.
         data = {
             "archetype": "Curious Connector",
             "core_need": "Growth with people",
@@ -357,18 +382,24 @@ def make_pdf_bytes(
     if ai.get("actions_7d"):
         section_break(pdf, "Next steps (7 days)")
         for a in ai["actions_7d"]:
-            mc(pdf, f"• {a}")
+            mc(pdf, f"- {a}")
 
     if ai.get("impl_if_then"):
-        section_break(pdf, "If–Then plan")
+        section_break(pdf, "If-Then plan")  # ASCII hyphen
         for a in ai["impl_if_then"]:
-            mc(pdf, f"• {a}")
+            mc(pdf, f"- {a}")
 
     # Signature week checklist page
     pdf.add_page()
     section_break(pdf, "Your Signature Week", "Use this as a simple checklist.")
     setf(pdf, "", 11)
-    mc(pdf, "Mon choose lever\nTue 20m rep\nWed invite friend\nThu reset space\nFri micro-adventure\nSat reflect 10m\nSun prep next")
+    mc(pdf, "Mon choose lever")
+    mc(pdf, "Tue 20m rep")
+    mc(pdf, "Wed invite friend")
+    mc(pdf, "Thu reset space")
+    mc(pdf, "Fri micro-adventure")
+    mc(pdf, "Sat reflect 10m")
+    mc(pdf, "Sun prep next")
 
     pdf.ln(2)
     tiny = ai.get("tiny_progress") or [
@@ -377,14 +408,14 @@ def make_pdf_bytes(
         "Block a weekly 10-minute planning slot",
     ]
     for t in tiny:
-        mc(pdf, f"□ {t}")
+        mc(pdf, f"[ ] {t}")  # ASCII checkbox
 
     pdf.ln(6)
     setf(pdf, "", 10)
     mc(pdf, f"Requested for: {email or '-'}")
     pdf.ln(6)
     setf(pdf, "", 9)
-    mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
+    mc(pdf, "Life Minus Work - This report is a starting point for reflection. Nothing here is medical or financial advice.")
 
     out = pdf.output(dest="S")
     if isinstance(out, str):
@@ -465,7 +496,7 @@ if st.session_state.get("preview_ready"):
         recs = []
         if "Connection" in top3:   recs.append("Invite someone for a 20-minute walk this week.")
         if "Growth" in top3:       recs.append("Schedule one 20-minute skill rep on your calendar.")
-        if "Peace" in top3:        recs.append("Block two 15-minute quiet blocks—phone away.")
+        if "Peace" in top3:        recs.append("Block two 15-minute quiet blocks - phone away.")
         if "Identity" in top3:     recs.append("Draft a 3-line purpose that feels true today.")
         if "Adventure" in top3:    recs.append("Plan one micro-adventure within 30 minutes from home.")
         if "Contribution" in top3: recs.append("Offer a 30-minute help session to someone this week.")
@@ -478,10 +509,10 @@ if st.session_state.get("preview_ready"):
         st.markdown("**What you’ll unlock with the full report:**")
         st.markdown(
             "- Your *postcard from 1 month ahead* (Future Snapshot)\n"
-            "- Insights & “Why Now” (personalized narrative)\n"
-            "- 3 next-step actions + If–Then plan\n"
+            "- Insights & Why Now (personalized narrative)\n"
+            "- 3 next-step actions + If-Then plan\n"
             "- Energy Map (energizers & drainers)\n"
-            "- Printable ‘Signature Week’ checklist page"
+            "- Printable 'Signature Week' checklist page"
         )
     st.caption("Unlock your complete Reflection Report to see your postcard from 1 month ahead, insights, plan & checklist.")
 
@@ -539,12 +570,12 @@ if st.session_state.get("preview_ready"):
                         )
                         st.success(f"We’ve emailed a code to {st.session_state.pending_email}.")
                         st.session_state.verify_state = "sent"
-                        st.rerun()  # <-- ensure the code-entry UI appears immediately
+                        st.rerun()  # ensure the code-entry UI appears immediately
                     except Exception as e:
                         if DEV_SHOW_CODES:
                             st.warning(f"(Dev Mode) Email not configured; using on-screen code: **{code}**")
                             st.session_state.verify_state = "sent"
-                            st.rerun()  # <-- also rerun in dev/fallback
+                            st.rerun()
                         else:
                             st.error(f"Couldn’t send the code. {e}")
 
@@ -564,7 +595,7 @@ if st.session_state.get("preview_ready"):
             elif v.strip() == st.session_state.pending_code:
                 st.success("Verified! Your full report is unlocked.")
                 st.session_state.verify_state = "verified"
-                st.rerun()  # <-- immediately reveal the full report section
+                st.rerun()  # immediately reveal the full report section
             else:
                 st.error("That code didn’t match. Please try again.")
         if resend:
@@ -624,7 +655,6 @@ if st.session_state.get("preview_ready"):
             mime="application/pdf",
         )
 
-        # optional: email the PDF automatically to the verified address
         with st.expander("Email me the PDF", expanded=False):
             if st.button("Send report to my email"):
                 try:
