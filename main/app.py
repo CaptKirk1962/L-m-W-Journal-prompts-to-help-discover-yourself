@@ -1,7 +1,16 @@
 # app.py — Life Minus Work (Streamlit)
 
 from __future__ import annotations
-import os, json, re, hashlib, unicodedata, time, ssl, smtplib, csv
+
+import os
+import json
+import re
+import csv
+import ssl
+import time
+import hashlib
+import smtplib
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from email.message import EmailMessage
@@ -12,11 +21,13 @@ import streamlit as st
 from fpdf import FPDF
 from PIL import Image
 
+
 # =============================================================================
 # App Config & Constants
 # =============================================================================
 
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
+
 
 def _resolve_model(raw: Optional[str]) -> str:
     if not raw:
@@ -30,6 +41,7 @@ def _resolve_model(raw: Optional[str]) -> str:
         "gpt-5 mini": "gpt-5-mini",
     }
     return alias_map.get(r, raw)
+
 
 # Force GPT-5 mini, as requested
 AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-5-mini")))
@@ -58,9 +70,16 @@ NOTIFY_TO = st.secrets.get("LW_NOTIFY_TO", "")  # if empty, falls back to BCC_TO
 
 # Admin toggle to view/download captured emails in the UI
 SHOW_EMAILS_ADMIN = (os.getenv("LW_SHOW_EMAILS_ADMIN", st.secrets.get("LW_SHOW_EMAILS_ADMIN", "0")) == "1")
+TEST_EMAIL_TO = st.secrets.get("LW_TEST_EMAIL_TO", "")
+
+# Optional admin helpers
+ALLOW_SHOW_CODE_BTN = (os.getenv("LW_ALLOW_SHOW_CODE_BUTTON", st.secrets.get("LW_ALLOW_SHOW_CODE_BUTTON", "0")) == "1")
+SMTP_DEBUG_ON = (os.getenv("LW_SMTP_DEBUG", st.secrets.get("LW_SMTP_DEBUG", "0")) == "1")
+
 
 def here() -> Path:
     return Path(__file__).parent
+
 
 # ---- Logo auto-detect (png/webp); optional override via LW_LOGO ----------------
 LOGO_CANDIDATES = [
@@ -70,6 +89,7 @@ LOGO_CANDIDATES = [
     "Life-Minus-Work-Logo.webp",
 ]
 
+
 def find_logo_path() -> Optional[Path]:
     for name in LOGO_CANDIDATES:
         if not name:
@@ -78,6 +98,7 @@ def find_logo_path() -> Optional[Path]:
         if p.exists():
             return p
     return None
+
 
 # =============================================================================
 # Questions Loading & Utilities
@@ -124,17 +145,21 @@ def load_questions(filename="questions.json") -> Tuple[List[dict], List[str]]:
         st.error(f"Could not parse {filename}: {e}")
         return [], THEMES
 
+
 def slug(s: str) -> str:
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")
     return s.lower()
 
+
 class PDF(FPDF):
     def header(self):
         pass
 
-def setf(pdf: "PDF", style="", size=11):
+
+def setf(pdf: "PDF", style: str = "", size: int = 11):
     pdf.set_font("Helvetica", style=style, size=size)
+
 
 # =============================================================================
 # FPDF Latin-1 Safety
@@ -151,6 +176,7 @@ LATIN1_MAP = {
     "\u00a0": " ", "\u200b": "",
 }
 
+
 def to_latin1(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
@@ -164,11 +190,14 @@ def to_latin1(text: str) -> str:
     t = re.sub(r"(\S{80})\S+", r"\1", t)
     return t
 
-def mc(pdf: "PDF", text: str, h=6):
+
+def mc(pdf: "PDF", text: str, h: float = 6.0):
     pdf.multi_cell(0, h, to_latin1(text))
 
-def sc(pdf: "PDF", w, h, text: str, ln=0):
+
+def sc(pdf: "PDF", w: float, h: float, text: str, ln: int = 0):
     pdf.cell(w, h, to_latin1(text), ln=ln)
+
 
 # =============================================================================
 # PDF Drawing Helpers
@@ -182,6 +211,7 @@ def hr(pdf: "PDF", y_offset: float = 2.0, gray: int = 220):
     pdf.ln(4)
     pdf.set_draw_color(0, 0, 0)
 
+
 def checkbox_line(pdf: "PDF", text: str, line_h: float = 7.5):
     x = pdf.get_x()
     y = pdf.get_y()
@@ -190,16 +220,28 @@ def checkbox_line(pdf: "PDF", text: str, line_h: float = 7.5):
     pdf.set_xy(x + box + 3, y)
     mc(pdf, text, h=line_h)
 
+
 def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
-    setf(pdf, "B", 14); mc(pdf, "Your Theme Snapshot", h=7); setf(pdf, "", 12)
+    setf(pdf, "B", 14)
+    mc(pdf, "Your Theme Snapshot", h=7)
+    setf(pdf, "", 12)
+
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     positive = [v for _, v in ordered if v > 0]
     max_pos = max(positive) if positive else 1
-    left_x = pdf.get_x(); y = pdf.get_y()
-    label_w = 40; bar_w_max = 118; bar_h = 5.0
+
+    left_x = pdf.get_x()
+    y = pdf.get_y()
+
+    label_w = 40
+    bar_w_max = 118
+    bar_h = 5.0
     pdf.set_fill_color(33, 150, 243)
+
     for theme, val in ordered:
-        pdf.set_xy(left_x, y); sc(pdf, label_w, 6, theme)
+        pdf.set_xy(left_x, y)
+        sc(pdf, label_w, 6, theme)
+
         bar_x = left_x + label_w + 2
         if val > 0:
             bar_w = (val / float(max_pos)) * bar_w_max
@@ -207,9 +249,14 @@ def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
             num_x = bar_x + bar_w + 2.5
         else:
             num_x = bar_x + 2.5
-        pdf.set_xy(num_x, y); sc(pdf, 0, 6, str(val))
+
+        pdf.set_xy(num_x, y)
+        sc(pdf, 0, 6, str(val))
         y += 7
-    pdf.set_y(y + 2); hr(pdf, y_offset=0)
+
+    pdf.set_y(y + 2)
+    hr(pdf, y_offset=0)
+
 
 # =============================================================================
 # Scoring
@@ -227,18 +274,23 @@ def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dic
                     scores[k] = scores.get(k, 0) + int(w or 0)
     return scores
 
-def top_n_themes(scores: Dict[str, int], n=3) -> List[str]:
+
+def top_n_themes(scores: Dict[str, int], n: int = 3) -> List[str]:
     return [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:n]]
+
 
 def choice_key(qid: str) -> str:
     return f"choice_{qid}"
 
+
 def free_key(qid: str) -> str:
     return f"free_{qid}"
+
 
 def q_version_hash(questions: List[dict]) -> str:
     s = json.dumps(questions, sort_keys=True)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
+
 
 # =============================================================================
 # Session State
@@ -257,11 +309,13 @@ def ensure_state(questions: List[dict]):
         st.session_state["free_by_qid"] = {q["id"]: old_f.get(q["id"], "") for q in questions}
         st.session_state["q_version"] = ver
 
+
 # =============================================================================
 # Email capture CSV (no extra deps)
 # =============================================================================
 
 EMAIL_LOG_CSV = here() / "emails.csv"
+
 
 def log_email_capture(email: str, first_name: str = "", meta: dict | None = None):
     """Append a row to emails.csv (no extra deps)."""
@@ -281,11 +335,13 @@ def log_email_capture(email: str, first_name: str = "", meta: dict | None = None
             w.writeheader()
         w.writerow(row)
 
+
 def load_email_log() -> list[dict]:
     if not EMAIL_LOG_CSV.exists():
         return []
     with EMAIL_LOG_CSV.open("r", newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
 
 def group_emails_by_domain(rows: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -295,6 +351,7 @@ def group_emails_by_domain(rows: list[dict]) -> dict[str, int]:
             domain = email.split("@", 1)[1]
             counts[domain] = counts.get(domain, 0) + 1
     return dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+
 
 # =============================================================================
 # OpenAI (lazy import) & AI helpers
@@ -311,15 +368,19 @@ def get_openai_client():
         st.warning(f"OpenAI SDK unavailable: {e}")
         return None
 
+
 def ai_enabled() -> bool:
     return get_openai_client() is not None
 
+
 def _extract_json_blob(txt: str) -> str:
     try:
-        start = txt.index("{"); end = txt.rindex("}")
-        return txt[start:end+1]
+        start = txt.index("{")
+        end = txt.rindex("}")
+        return txt[start:end + 1]
     except Exception:
         return "{}"
+
 
 AI_SCHEMA_FIELDS = (
     "{archetype, core_need, signature_metaphor, signature_sentence, "
@@ -331,6 +392,7 @@ AI_SCHEMA_FIELDS = (
     'balancing_opportunity:[], keep_in_view:[], tiny_progress:[]}'
 )
 
+
 def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
     # Rich fallback shaped like target schema
     return {
@@ -339,26 +401,42 @@ def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
         "signature_metaphor": "a tango with possibility",
         "signature_sentence": "You learn by stepping forward and listening to the rhythm around you.",
         "top_themes": [t for t, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]],
-        "insights": ("You move like someone who prefers the step to the map. Adventure leads; Growth and "
-                     "Contribution need simple scaffolding so experiences become learning and trust."),
-        "why_now": ("Early momentum is easier to shape than late habits. A few tiny anchors now will turn "
-                    "spark into clarity and steady contribution."),
-        "future_snapshot": ("One month from now you feel a quieter confidence. Small rituals after each adventure "
-                            "leave a trail of learning and stronger bonds."),
+        "insights": (
+            "You move like someone who prefers the step to the map. Adventure leads; Growth and "
+            "Contribution need simple scaffolding so experiences become learning and trust."
+        ),
+        "why_now": (
+            "Early momentum is easier to shape than late habits. A few tiny anchors now will turn "
+            "spark into clarity and steady contribution."
+        ),
+        "future_snapshot": (
+            "One month from now you feel a quieter confidence. Small rituals after each adventure "
+            "leave a trail of learning and stronger bonds."
+        ),
         "from_your_words": {
             "summary": "Your notes point to rhythm, partnership, and small acts that make moments matter.",
             "keepers": ["try new steps", "listen before leading", "turn play into learning"],
         },
-        "one_liners_to_keep": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
+        "one_liners_to_keep": [
+            "listen as much as lead",
+            "small commitments build trust",
+            "one step clarifies identity"
+        ],
         "personal_pledge": "I will try one new adventure and call someone afterward.",
-        "what_this_really_says": ("You're energized by novelty and expression; add tiny routines that capture insight "
-                                  "and follow-up so energy compounds into identity and contribution."),
+        "what_this_really_says": (
+            "You're energized by novelty and expression; add tiny routines that capture insight "
+            "and follow-up so energy compounds into identity and contribution."
+        ),
         "signature_strengths": ["seeks novelty", "social rhythm", "authentic expression", "decisive action"],
         "energy_map": {
             "energizers": ["new experiences", "shared adventures", "creative risks", "spontaneous plans", "storytelling"],
             "drainers": ["endless routine", "vague obligations", "over-analysis", "long solitary stretches"],
         },
-        "hidden_tensions": ["loves variety but avoids follow-through", "wants clarity yet resists structure", "connects intensely then withdraws"],
+        "hidden_tensions": [
+            "loves variety but avoids follow-through",
+            "wants clarity yet resists structure",
+            "connects intensely then withdraws"
+        ],
         "watch_out": "Don't let the thrill of novelty replace small acts of responsibility that build trust and growth.",
         "actions_7d": ["Plan one mini-adventure", "Invite someone to join", "Journal one identity insight"],
         "impl_if_then": [
@@ -374,10 +452,18 @@ def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
             "Note one learning in a simple log",
             "Offer one small helpful action",
         ],
-        "balancing_opportunity": ["Turn adventures into learning", "Translate experiences into small acts of contribution"],
-        "keep_in_view": ["listen as much as lead", "small commitments build trust", "one step clarifies identity"],
+        "balancing_opportunity": [
+            "Turn adventures into learning",
+            "Translate experiences into small acts of contribution"
+        ],
+        "keep_in_view": [
+            "listen as much as lead",
+            "small commitments build trust",
+            "one step clarifies identity"
+        ],
         "tiny_progress": ["Tried one new thing", "Called someone after event", "Wrote one reflection"],
     }
+
 
 # =============================================================================
 # List normalizer to prevent per-character bullets
@@ -394,6 +480,7 @@ def as_list(v) -> List[str]:
         return parts if len(parts) > 1 else [s]
     return []
 
+
 # =============================================================================
 # AI Runner — GPT-5 mini only, with 7000→6000 retry (max_completion_tokens, no temperature)
 # =============================================================================
@@ -404,6 +491,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     Records st.session_state['effective_model'] and ['model_attempts'].
     """
     usage = {}
+
     prompt_ctx = {
         "first_name": first_name or "",
         "horizon_weeks": horizon_weeks,
@@ -429,6 +517,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         "- All list fields MUST be JSON arrays of short strings (never a paragraph).\n"
         "- Keep language simple, humane, and encouraging.\n"
     )
+
     user_msg = (
         "Name: {name}\n"
         "Horizon: about {weeks} weeks (~1 month)\n"
@@ -444,6 +533,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
 
     model = AI_MODEL  # "gpt-5-mini"
     attempts: List[Tuple[str, str]] = []
+
     for max_out in (AI_MAX_TOKENS_CAP, AI_MAX_TOKENS_FALLBACK):
         try:
             kwargs = {
@@ -456,6 +546,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
                 "max_completion_tokens": int(max_out),
             }
             st.session_state["param_used"] = "max_completion_tokens"
+
             resp = client.chat.completions.create(**kwargs)
 
             txt = (resp.choices[0].message.content or "").strip()
@@ -475,6 +566,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
 
             if "top_themes" not in data or not isinstance(data["top_themes"], list):
                 data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+
             for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
                 if key not in data:
                     raise ValueError("Missing key: " + key)
@@ -482,7 +574,8 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
             st.session_state["effective_model"] = model
             attempts.append((f"{model} @ {max_out}", "ok"))
             st.session_state["model_attempts"] = attempts
-            return (data, usage, txt[:800])
+            return data, usage, txt[:800]
+
         except Exception as e:
             attempts.append((f"{model} @ {max_out}", f"error: {e}"))
             continue
@@ -492,43 +585,69 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     st.session_state["model_attempts"] = attempts
     return _fallback_ai(scores), usage, raw_text
 
+
 # =============================================================================
-# Email Helpers (SMTP via Gmail) — with optional CC/BCC
+# Email Helpers (SMTP via Gmail) — with optional CC/BCC and debug
 # =============================================================================
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+
 def valid_email(e: str) -> bool:
     return bool(EMAIL_RE.match((e or "").strip()))
 
-def send_email(to_addr: str, subject: str, text_body: str, html_body: str | None = None,
-               attachments: list[tuple[str, bytes, str]] | None = None,
-               cc: Optional[str] = None, bcc: Optional[str] = None):
+
+def send_email(
+    to_addr: str,
+    subject: str,
+    text_body: str,
+    html_body: str | None = None,
+    attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+):
     if not (GMAIL_USER and GMAIL_APP_PASSWORD):
         raise RuntimeError("Email not configured: set GMAIL_USER and GMAIL_APP_PASSWORD in Streamlit secrets.")
+
+    # Trim any stray whitespace from secrets/inputs
+    from_addr = (GMAIL_USER or "").strip()
+    to_addr = (to_addr or "").strip()
+    cc = (cc or "").strip() or None
+    bcc = (bcc or "").strip() or None
+
     msg = EmailMessage()
-    msg["From"] = formataddr((SENDER_NAME, GMAIL_USER))
+    msg["From"] = formataddr((SENDER_NAME, from_addr))
     msg["To"] = to_addr
-    msg["Subject"] = subject
-    msg["Reply-To"] = REPLY_TO
     if cc:
         msg["Cc"] = cc
     if bcc:
         msg["Bcc"] = bcc
+    msg["Subject"] = subject
+    msg["Reply-To"] = REPLY_TO
+
     msg.set_content(text_body or "")
     if html_body:
         msg.add_alternative(html_body, subtype="html")
+
     for (filename, data, mime_type) in (attachments or []):
         maintype, subtype = mime_type.split("/", 1)
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
+
     context = ssl.create_default_context()
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+        if SMTP_DEBUG_ON:
+            server.set_debuglevel(1)
+        server.ehlo()
         server.starttls(context=context)
-        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        server.ehlo()
+        server.login(from_addr, (GMAIL_APP_PASSWORD or "").strip())
         server.send_message(msg)
+
 
 def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
+
 
 def maybe_send_admin_copy_on_download(pdf_bytes: bytes, report_key: str, user_email: str, first_name: str):
     """
@@ -539,13 +658,16 @@ def maybe_send_admin_copy_on_download(pdf_bytes: bytes, report_key: str, user_em
         return
     if not pdf_bytes:
         return
+
     # Avoid duplicates for the same build
     sent_key = st.session_state.get("admin_copy_sent_key")
     if sent_key == report_key:
         return
+
     notify_to = (NOTIFY_TO or BCC_TO_DEFAULT or GMAIL_USER).strip()
     if not notify_to:
         return
+
     try:
         subj = f"[Admin Copy] Life Minus Work — Report for {first_name or '-'} <{user_email or '-'}>"
         txt = f"Admin copy for {first_name or '-'} <{user_email or '-'}>. Report attached."
@@ -555,30 +677,35 @@ def maybe_send_admin_copy_on_download(pdf_bytes: bytes, report_key: str, user_em
             subject=subj,
             text_body=txt,
             html_body=html,
-            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")]
+            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
         )
         st.session_state["admin_copy_sent_key"] = report_key
     except Exception as e:
         st.warning(f"(Admin copy) {e}")
 
+
 # =============================================================================
 # PDF Builder (full layout like your “33” PDF) — using as_list() everywhere
 # =============================================================================
 
-def section_title(pdf: "PDF", title: str, size=14, top_margin=2):
+def section_title(pdf: "PDF", title: str, size: int = 14, top_margin: int = 2):
     pdf.ln(top_margin)
-    setf(pdf, "B", size); mc(pdf, title); setf(pdf, "", 11)
+    setf(pdf, "B", size)
+    mc(pdf, title)
+    setf(pdf, "", 11)
+
 
 def bullets(pdf: "PDF", items: List[str]):
     for it in items:
         mc(pdf, f"- {it}")
+
 
 def make_pdf_bytes(
     first_name: str,
     email: str,
     scores: Dict[str, int],
     ai: Dict[str, Any],
-    logo_path: Optional[Path] = None
+    logo_path: Optional[Path] = None,
 ) -> bytes:
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=16)
@@ -588,6 +715,7 @@ def make_pdf_bytes(
     y_after_logo = 18
     logo = logo_path or find_logo_path()
     logo_found = False
+
     if logo and Path(logo).exists():
         try:
             img = Image.open(logo).convert("RGBA")   # WEBP/PNG both OK
@@ -598,24 +726,33 @@ def make_pdf_bytes(
             logo_found = True
         except Exception:
             y_after_logo = 20
+
     pdf.set_y(y_after_logo)
 
     # Header
-    setf(pdf, "B", 18); mc(pdf, "Life Minus Work - Reflection Report", h=9)
-    setf(pdf, "", 12); mc(pdf, f"Hi {first_name or 'there'},")
+    setf(pdf, "B", 18)
+    mc(pdf, "Life Minus Work - Reflection Report", h=9)
+    setf(pdf, "", 12)
+    mc(pdf, f"Hi {first_name or 'there'},")
     hr(pdf)
 
     # Archetype cluster
-    section_title(pdf, "Archetype"); mc(pdf, "A simple lens for your pattern.")
-    setf(pdf, "B", 12); mc(pdf, ai.get("archetype", "-")); setf(pdf, "", 11)
+    section_title(pdf, "Archetype")
+    mc(pdf, "A simple lens for your pattern.")
+    setf(pdf, "B", 12)
+    mc(pdf, ai.get("archetype", "-"))
+    setf(pdf, "", 11)
 
-    section_title(pdf, "Core Need"); mc(pdf, "The fuel that keeps your effort meaningful.")
+    section_title(pdf, "Core Need")
+    mc(pdf, "The fuel that keeps your effort meaningful.")
     mc(pdf, ai.get("core_need", "-"))
 
-    section_title(pdf, "Signature Metaphor"); mc(pdf, "A mental image to remember your mode.")
+    section_title(pdf, "Signature Metaphor")
+    mc(pdf, "A mental image to remember your mode.")
     mc(pdf, ai.get("signature_metaphor", "-"))
 
-    section_title(pdf, "Signature Sentence"); mc(pdf, "One clean line to orient your week.")
+    section_title(pdf, "Signature Sentence")
+    mc(pdf, "One clean line to orient your week.")
     mc(pdf, ai.get("signature_sentence", "-"))
     hr(pdf)
 
@@ -624,7 +761,9 @@ def make_pdf_bytes(
     mc(pdf, "Where your energy is strongest right now.")
     top3 = ai.get("top_themes") or [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
     if top3:
-        setf(pdf, "B", 12); mc(pdf, ", ".join(top3)); setf(pdf, "", 11)
+        setf(pdf, "B", 12)
+        mc(pdf, ", ".join(top3))
+        setf(pdf, "", 11)
     draw_scores_barchart(pdf, scores)
 
     # From your words
@@ -634,96 +773,131 @@ def make_pdf_bytes(
         mc(pdf, "We pulled a few cues from what you typed.")
         mc(pdf, fyw["summary"])
         if fyw.get("keepers"):
-            section_title(pdf, "One-liners to keep"); mc(pdf, "Tiny reminders that punch above their weight.")
+            section_title(pdf, "One-liners to keep")
+            mc(pdf, "Tiny reminders that punch above their weight.")
             bullets(pdf, as_list(fyw["keepers"]))
         hr(pdf)
 
     # Personal pledge
     if ai.get("personal_pledge"):
-        section_title(pdf, "Personal pledge"); mc(pdf, "Your simple promise to yourself.")
-        mc(pdf, ai["personal_pledge"]); hr(pdf)
+        section_title(pdf, "Personal pledge")
+        mc(pdf, "Your simple promise to yourself.")
+        mc(pdf, ai["personal_pledge"])
+        hr(pdf)
 
     # What this really says + Insights + Why Now + Future Snapshot
     if ai.get("what_this_really_says"):
         section_title(pdf, "What this really says about you")
-        mc(pdf, ai["what_this_really_says"]); hr(pdf)
+        mc(pdf, ai["what_this_really_says"])
+        hr(pdf)
 
     if ai.get("insights"):
-        section_title(pdf, "Insights"); mc(pdf, "A practical, encouraging synthesis of your answers.")
-        mc(pdf, ai["insights"]); hr(pdf)
+        section_title(pdf, "Insights")
+        mc(pdf, "A practical, encouraging synthesis of your answers.")
+        mc(pdf, ai["insights"])
+        hr(pdf)
 
     if ai.get("why_now"):
-        section_title(pdf, "Why Now"); mc(pdf, "Why these themes may be active in this season.")
-        mc(pdf, ai["why_now"]); hr(pdf)
+        section_title(pdf, "Why Now")
+        mc(pdf, "Why these themes may be active in this season.")
+        mc(pdf, ai["why_now"])
+        hr(pdf)
 
     if ai.get("future_snapshot"):
-        section_title(pdf, "Future Snapshot"); mc(pdf, "A short postcard from 1 month ahead.")
-        mc(pdf, ai["future_snapshot"]); hr(pdf)
+        section_title(pdf, "Future Snapshot")
+        mc(pdf, "A short postcard from 1 month ahead.")
+        mc(pdf, ai["future_snapshot"])
+        hr(pdf)
 
     # Strengths & Energy map
     if ai.get("signature_strengths"):
-        section_title(pdf, "Signature Strengths"); mc(pdf, "Traits to lean on when momentum matters.")
-        bullets(pdf, as_list(ai.get("signature_strengths"))); hr(pdf)
+        section_title(pdf, "Signature Strengths")
+        mc(pdf, "Traits to lean on when momentum matters.")
+        bullets(pdf, as_list(ai.get("signature_strengths")))
+        hr(pdf)
 
     emap = ai.get("energy_map") or {}
     if emap.get("energizers") or emap.get("drainers"):
-        section_title(pdf, "Energy Map"); mc(pdf, "Name what fuels you, and what quietly drains you.")
+        section_title(pdf, "Energy Map")
+        mc(pdf, "Name what fuels you, and what quietly drains you.")
         if emap.get("energizers"):
-            setf(pdf, "B", 11); mc(pdf, "Energizers"); setf(pdf, "", 11)
+            setf(pdf, "B", 11)
+            mc(pdf, "Energizers")
+            setf(pdf, "", 11)
             bullets(pdf, as_list(emap.get("energizers")))
         if emap.get("drainers"):
-            setf(pdf, "B", 11); mc(pdf, "Drainers"); setf(pdf, "", 11)
+            setf(pdf, "B", 11)
+            mc(pdf, "Drainers")
+            setf(pdf, "", 11)
             bullets(pdf, as_list(emap.get("drainers")))
         hr(pdf)
 
     # Tensions & Watch-out
     if ai.get("hidden_tensions"):
-        section_title(pdf, "Hidden Tensions"); mc(pdf, "Small frictions to watch with kindness.")
-        bullets(pdf, as_list(ai.get("hidden_tensions"))); hr(pdf)
+        section_title(pdf, "Hidden Tensions")
+        mc(pdf, "Small frictions to watch with kindness.")
+        bullets(pdf, as_list(ai.get("hidden_tensions")))
+        hr(pdf)
 
     if ai.get("watch_out"):
         section_title(pdf, "Watch-out (gentle blind spot)")
         mc(pdf, "A nudge to keep you steady.")
-        mc(pdf, ai["watch_out"]); hr(pdf)
+        mc(pdf, ai["watch_out"])
+        hr(pdf)
 
     # Actions & Plans
     if ai.get("actions_7d"):
-        section_title(pdf, "3 Next-step Actions (7 days)"); mc(pdf, "Tiny moves that compound quickly.")
-        bullets(pdf, as_list(ai.get("actions_7d"))); hr(pdf)
+        section_title(pdf, "3 Next-step Actions (7 days)")
+        mc(pdf, "Tiny moves that compound quickly.")
+        bullets(pdf, as_list(ai.get("actions_7d")))
+        hr(pdf)
 
     if ai.get("impl_if_then"):
         section_title(pdf, "Implementation Intentions (If-Then)")
         mc(pdf, "Pre-decide responses to common bumps.")
-        bullets(pdf, as_list(ai.get("impl_if_then"))); hr(pdf)
+        bullets(pdf, as_list(ai.get("impl_if_then")))
+        hr(pdf)
 
     if ai.get("plan_1_week"):
-        section_title(pdf, "1-Week Gentle Plan"); mc(pdf, "A light structure you can actually follow.")
-        bullets(pdf, as_list(ai.get("plan_1_week"))); hr(pdf)
+        section_title(pdf, "1-Week Gentle Plan")
+        mc(pdf, "A light structure you can actually follow.")
+        bullets(pdf, as_list(ai.get("plan_1_week")))
+        hr(pdf)
 
     if ai.get("balancing_opportunity"):
-        section_title(pdf, "Balancing Opportunity"); mc(pdf, "Low themes to tenderly rebalance.")
-        bullets(pdf, as_list(ai.get("balancing_opportunity"))); hr(pdf)
+        section_title(pdf, "Balancing Opportunity")
+        mc(pdf, "Low themes to tenderly rebalance.")
+        bullets(pdf, as_list(ai.get("balancing_opportunity")))
+        hr(pdf)
 
     if ai.get("keep_in_view"):
-        section_title(pdf, "Keep This In View"); mc(pdf, "Tiny reminders that protect progress.")
+        section_title(pdf, "Keep This In View")
+        mc(pdf, "Tiny reminders that protect progress.")
         bullets(pdf, as_list(ai.get("keep_in_view")))
 
     # Page 2: Signature Week + Tiny Progress
     pdf.add_page()
-    setf(pdf, "B", 16); mc(pdf, "Signature Week - At a glance")
-    setf(pdf, "", 11); mc(pdf, "A simple plan you can print or screenshot. Check items off as you go.")
+    setf(pdf, "B", 16)
+    mc(pdf, "Signature Week - At a glance")
+    setf(pdf, "", 11)
+    mc(pdf, "A simple plan you can print or screenshot. Check items off as you go.")
     pdf.ln(2)
     for line in as_list(ai.get("plan_1_week")):
         checkbox_line(pdf, str(line))
     hr(pdf)
 
-    setf(pdf, "B", 14); mc(pdf, "Tiny Progress Tracker")
-    setf(pdf, "", 11); mc(pdf, "Three tiny milestones you can celebrate this week.")
+    setf(pdf, "B", 14)
+    mc(pdf, "Tiny Progress Tracker")
+    setf(pdf, "", 11)
+    mc(pdf, "Three tiny milestones you can celebrate this week.")
     for t in as_list(ai.get("tiny_progress") or ["Tried one new thing", "Called someone after event", "Wrote one reflection"]):
         checkbox_line(pdf, str(t))
 
-    pdf.ln(6); setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
-    pdf.ln(6); setf(pdf, "", 9)
+    pdf.ln(6)
+    setf(pdf, "", 10)
+    mc(pdf, f"Requested for: {email or '-'}")
+    pdf.ln(6)
+    setf(pdf, "", 9)
     mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
 
     out = pdf.output(dest="S")
@@ -734,6 +908,7 @@ def make_pdf_bytes(
     st.session_state["logo_found"] = True if logo_found else False
     st.session_state["logo_path"] = str(logo) if logo else "(none)"
     return out
+
 
 # =============================================================================
 # Streamlit UI
@@ -822,12 +997,18 @@ if st.session_state.get("preview_ready"):
             for k in keepers:
                 st.markdown(f"- {k}")
         recs = []
-        if "Connection" in top3:   recs.append("Invite someone for a 20-minute walk this week.")
-        if "Growth" in top3:       recs.append("Schedule one 20-minute skill rep on your calendar.")
-        if "Peace" in top3:        recs.append("Block two 15-minute quiet blocks—phone away.")
-        if "Identity" in top3:     recs.append("Draft a 3-line purpose that feels true today.")
-        if "Adventure" in top3:    recs.append("Plan one micro-adventure within 30 minutes from home.")
-        if "Contribution" in top3: recs.append("Offer a 30-minute help session to someone this week.")
+        if "Connection" in top3:
+            recs.append("Invite someone for a 20-minute walk this week.")
+        if "Growth" in top3:
+            recs.append("Schedule one 20-minute skill rep on your calendar.")
+        if "Peace" in top3:
+            recs.append("Block two 15-minute quiet blocks—phone away.")
+        if "Identity" in top3:
+            recs.append("Draft a 3-line purpose that feels true today.")
+        if "Adventure" in top3:
+            recs.append("Plan one micro-adventure within 30 minutes from home.")
+        if "Contribution" in top3:
+            recs.append("Offer a 30-minute help session to someone this week.")
         if recs:
             st.markdown("**Tiny actions to try this week:**")
             for r in recs[:3]:
@@ -903,8 +1084,8 @@ if st.session_state.get("preview_ready"):
                         st.session_state.verify_state = "sent"
                         st.rerun()
                     except Exception as e:
-                        if DEV_SHOW_CODES:
-                            st.warning(f"(Dev Mode) Email not configured; on-screen code: **{code}**")
+                        if ALLOW_SHOW_CODE_BTN:
+                            st.warning(f"(Email failed) Showing code here for testing: **{code}**")
                             st.session_state.verify_state = "sent"
                             st.rerun()
                         else:
@@ -913,11 +1094,17 @@ if st.session_state.get("preview_ready"):
     elif st.session_state.verify_state == "sent":
         st.info(f"Enter the 6-digit code we emailed to **{st.session_state.pending_email}**.")
         v = st.text_input("Verification code", max_chars=6)
-        c1, c2 = st.columns([1, 1])
+        c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             verify_btn = st.button("Verify")
         with c2:
             resend = st.button("Resend code")
+        with c3:
+            if ALLOW_SHOW_CODE_BTN:
+                show_btn = st.button("⬇️ (Admin) Show code")
+            else:
+                show_btn = False
+
         if verify_btn:
             if time.time() - st.session_state.code_issued_at > 600:
                 st.error("This code has expired. Please request a new one.")
@@ -937,6 +1124,7 @@ if st.session_state.get("preview_ready"):
                     st.warning(f"(Email logging) {e}")
             else:
                 st.error("That code didn’t match. Please try again.")
+
         if resend:
             now = time.time()
             if now - st.session_state.last_send_ts < 25:
@@ -954,10 +1142,13 @@ if st.session_state.get("preview_ready"):
                     )
                     st.success("We’ve sent a new code.")
                 except Exception as e:
-                    if DEV_SHOW_CODES:
-                        st.warning(f"(Dev Mode) Email not configured; new on-screen code: **{st.session_state.pending_code}**")
+                    if ALLOW_SHOW_CODE_BTN:
+                        st.warning(f"(Email failed) New code: **{st.session_state.pending_code}**")
                     else:
                         st.error(f"Couldn’t resend the code. {e}")
+
+        if show_btn and ALLOW_SHOW_CODE_BTN:
+            st.info(f"Your verification code is: **{st.session_state.pending_code}**")
 
 # Verified → generate once, then reuse
 if st.session_state.get("verify_state") == "verified":
@@ -976,17 +1167,21 @@ if st.session_state.get("verify_state") == "verified":
         or st.session_state.get("pdf_bytes") is None
         or st.session_state.get("ai_sections") is None
     )
+
     if need_build:
         with st.status("Generating your report…", expanded=False) as s:
             scores_build = compute_scores(questions, answers_by_qid)
             free_responses = {qid: txt for qid, txt in (free_by_qid or {}).items() if txt and txt.strip()}
+
             ai_sections, usage, raw_head = run_ai(
                 first_name=st.session_state.get("first_name_input", ""),
                 horizon_weeks=FUTURE_WEEKS_DEFAULT,
                 scores=scores_build,
                 scores_free=free_responses,
             )
+
             s.update(label="Building PDF…")
+
             pdf_bytes = make_pdf_bytes(
                 first_name=st.session_state.get("first_name_input", ""),
                 email=st.session_state.pending_email,
@@ -994,15 +1189,17 @@ if st.session_state.get("verify_state") == "verified":
                 ai=ai_sections,
                 logo_path=find_logo_path(),
             )
+
             st.session_state["report_key"] = report_key
             st.session_state["pdf_bytes"] = pdf_bytes
             st.session_state["ai_sections"] = ai_sections
             st.session_state["scores_final"] = scores_build
             st.session_state["ai_usage"] = usage
             st.session_state["raw_head"] = raw_head
+
             s.update(label="Report ready.", state="complete")
 
-            # NEW: send admin copy now if configured, so you still get it when user only downloads
+            # Send admin copy now if configured (so you still get it when user only downloads)
             try:
                 maybe_send_admin_copy_on_download(
                     pdf_bytes=pdf_bytes,
@@ -1057,10 +1254,11 @@ if st.session_state.get("verify_state") == "verified":
             st.write("Model attempts:")
             for m, status in att:
                 st.write(f"    {m}: {status}")
-        st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
+        st.text("Raw head (first 800 chars)")
+        st.code(st.session_state.get("raw_head") or "(empty)")
 
 # =============================================================================
-# Admin: captured emails
+# Admin: captured emails + email diagnostics
 # =============================================================================
 
 if SHOW_EMAILS_ADMIN:
@@ -1079,3 +1277,30 @@ if SHOW_EMAILS_ADMIN:
             )
         else:
             st.info("No emails captured yet.")
+
+    with st.expander("Email diagnostics (admin)", expanded=False):
+        st.write(f"Sender (GMAIL_USER): {GMAIL_USER!r}")
+        st.write(f"Reply-To: {REPLY_TO!r}")
+        st.write(f"CC default: {CC_TO_DEFAULT!r}")
+        st.write(f"BCC default: {BCC_TO_DEFAULT!r}")
+        st.write("Tip: Check the Gmail **Sent** folder and any **Security > Recent activity** alerts.")
+        t1, t2 = st.columns(2)
+        with t1:
+            go = st.button("Send test email to sender (GMAIL_USER)")
+        with t2:
+            to_custom = st.text_input("Send test email to:", value=TEST_EMAIL_TO)
+            go2 = st.button("Send test to above")
+
+        if go:
+            try:
+                send_email(GMAIL_USER, "LMW test (sender)", "This is a test from Streamlit.")
+                st.success("Test sent to GMAIL_USER. Check the **Sent** folder and inbox.")
+            except Exception as e:
+                st.error(f"Test send failed: {e}")
+
+        if go2 and to_custom.strip():
+            try:
+                send_email(to_custom.strip(), "LMW test (custom)", "This is a test from Streamlit.")
+                st.success(f"Test sent to {to_custom.strip()}.")
+            except Exception as e:
+                st.error(f"Test send failed: {e}")
