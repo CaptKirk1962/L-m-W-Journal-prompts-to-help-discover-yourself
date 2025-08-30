@@ -363,51 +363,50 @@ def make_pdf_bytes(
     email: str,
     scores: Dict[str, int],
     top3: List[str],
-    ai: Dict[str, any],
+    ai: dict,
     horizon_weeks: int,
-    logo_path: Optional[Path] = None
+    logo_path: Optional[Path],
 ) -> bytes:
-    pdf = PDF()
-    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf = PDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(10, 10, 10)
     pdf.add_page()
+    setf(pdf, "", 12)
 
-    # Logo then space then title (prevents overlap)
-    y_after_logo = 12
-    if logo_path and Path(logo_path).exists():
+    # Logo if available
+    if logo_path and logo_path.exists():
         try:
-            img = Image.open(logo_path).convert("RGBA")
-            tmp = here() / "_logo_tmp.png"
-            img.save(tmp, format="PNG")
-            pdf.image(str(tmp), x=10, y=10, w=28)
-            y_after_logo = 44
+            with Image.open(logo_path) as img:
+                img = img.convert("RGB")
+                logo_temp = Path("/tmp/lmw_logo.png")
+                img.save(logo_temp, "PNG")
+                pdf.image(str(logo_temp), x=10, y=8, w=30)
         except Exception:
-            y_after_logo = 24
-    pdf.set_y(y_after_logo)
+            pass
 
     # Title
-    setf(pdf, "B", 18); mc(pdf, "Life Minus Work - Reflection Report", h=9)
-    setf(pdf, "", 12); mc(pdf, f"Hi {first_name or 'there'},")
+    setf(pdf, "B", 20); mc(pdf, "Your Reflection Report", h=8)
+    setf(pdf, "I", 11)
+    ts = datetime.datetime.now().strftime("%B %d, %Y")
+    mc(pdf, f"Generated for {first_name or 'you'} on {ts}")
+    pdf.ln(2)
+    setf(pdf, "", 12)
 
-    # ===== Header identity block =====
-    section_break(pdf, "Archetype", "A simple lens for your pattern.")
-    mc(pdf, ai.get("archetype", "-"))
-    section_break(pdf, "Core Need", "The fuel that keeps your effort meaningful.")
-    mc(pdf, ai.get("core_need", "-"))
-    section_break(pdf, "Signature Metaphor", "A mental image to remember your mode.")
-    mc(pdf, ai.get("signature_metaphor", "-"))
-    section_break(pdf, "Signature Sentence", "One clean line to orient your week.")
-    mc(pdf, ai.get("signature_sentence", "-"))
+    # Archetype, Core Need, Signature Metaphor
+    setf(pdf, "B", 14); mc(pdf, ai.get("archetype", "Your Archetype"), h=7)
+    setf(pdf, "", 12); mc(pdf, ai.get("core_need", "Core Need..."))
+    pdf.ln(1)
+    setf(pdf, "I", 11); mc(pdf, ai.get("signature_metaphor", "Signature Metaphor..."))
+    pdf.ln(2)
+    setf(pdf, "B", 12); mc(pdf, ai.get("signature_sentence", "Signature Sentence..."))
+    pdf.ln(3)
 
-    # ===== Top / Snapshot =====
-    section_break(pdf, "Top Themes", "Where your energy is strongest right now.")
-    mc(pdf, ", ".join(top3) if top3 else "-")
     draw_scores_barchart(pdf, scores)
 
     # ===== From your words =====
-   fyw = ai.get("from_your_words") or {}
-if fyw.get("summary"):
-    section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
-    mc(pdf, fyw["summary"])
+    fyw = ai.get("from_your_words") or {}
+    if fyw.get("summary"):
+        section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
+        mc(pdf, fyw["summary"])
 
     # ===== One-liners & Personal pledge =====
     if ai.get("one_liners_to_keep"):
@@ -475,34 +474,34 @@ if fyw.get("summary"):
     setf(pdf, "B", 12); mc(pdf, "Next Page: Printable 'Signature Week - At a glance' + Tiny Progress Tracker")
     setf(pdf, "", 11); mc(pdf, "Tip: Put this on your fridge, desk, or phone notes.")
 
-   # ===== Page 2: Signature Week & Tiny Progress =====
-pdf.add_page()
+    # ===== Page 2: Signature Week & Tiny Progress =====
+    pdf.add_page()
 
-# If AI provided a 1-week plan, use it; otherwise show a friendly default layout
-plan = ai.get("plan_1_week") or [
-    "Day 1 (Mon): Review ideas list 10 min; pick one micro-adventure",
-    "Day 2 (Tue): Invite one person with a clear, low-effort plan",
-    "Day 3 (Wed): Prep a one-line purpose and a simple backup",
-    "Day 4 (Thu): Do the micro-adventure (2–4 hrs) or skill practice",
-    "Day 5 (Fri): Send a short thank-you or highlight",
-    "Day 6 (Sat): Reflect 5–10 min; one lesson + one joy",
-    "Day 7 (Sun): Rest; add two fresh ideas to the list",
-]
-signature_week_block(pdf, plan)
+    # If AI provided a 1-week plan, use it; otherwise show a friendly default layout
+    plan = ai.get("plan_1_week") or [
+        "Day 1 (Mon): Review ideas list 10 min; pick one micro-adventure",
+        "Day 2 (Tue): Invite one person with a clear, low-effort plan",
+        "Day 3 (Wed): Prep a one-line purpose and a simple backup",
+        "Day 4 (Thu): Do the micro-adventure (2–4 hrs) or skill practice",
+        "Day 5 (Fri): Send a short thank-you or highlight",
+        "Day 6 (Sat): Reflect 5–10 min; one lesson + one joy",
+        "Day 7 (Sun): Rest; add two fresh ideas to the list",
+    ]
+    signature_week_block(pdf, plan)
 
-pdf.ln(2)
-tiny = ai.get("tiny_progress") or [
-    "Choose one small new activity + invite someone",
-    "Capture one lesson + one gratitude after the activity",
-    "Block a weekly 10-minute planning slot",
-]
-tiny_progress_block(pdf, tiny)
+    pdf.ln(2)
+    tiny = ai.get("tiny_progress") or [
+        "Choose one small new activity + invite someone",
+        "Capture one lesson + one gratitude after the activity",
+        "Block a weekly 10-minute planning slot",
+    ]
+    tiny_progress_block(pdf, tiny)
 
-pdf.ln(6)
-setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
-pdf.ln(6)
-setf(pdf, "", 9)
-mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
+    pdf.ln(6)
+    setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
+    pdf.ln(6)
+    setf(pdf, "", 9)
+    mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
 
     out = pdf.output(dest="S")
     if isinstance(out, str):
