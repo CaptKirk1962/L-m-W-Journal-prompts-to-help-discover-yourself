@@ -1,10 +1,4 @@
 # app.py — Life Minus Work (Streamlit)
-# Changes in this version:
-# - Tries AI models in order: gpt-5-mini → gpt-4o-mini → gpt-4o, records effective model in debug
-# - Keeps rich report layout (like your “33” PDF)
-# - Tightened logo header spacing; explicit debug note if logo missing
-# - Progress note about generation time kept
-# - Stable one-time generation cache; lazy OpenAI import; Latin-1 PDF safety; email gate flow
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, time, ssl, smtplib
@@ -17,9 +11,9 @@ import streamlit as st
 from fpdf import FPDF
 from PIL import Image
 
-# -----------------------------
+# =============================================================================
 # App Config & Constants
-# -----------------------------
+# =============================================================================
 
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
@@ -37,8 +31,10 @@ def _resolve_model(raw: Optional[str]) -> str:
     return alias_map.get(r, raw)
 
 AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-5-mini")))
-AI_MAX_TOKENS_CAP = 8000
-AI_MAX_TOKENS_FALLBACK = 7000
+
+# Output token targets (can be tuned via secrets or env)
+AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "4500"))           # hard cap we pass to API
+DESIRED_OUTPUT_TOKENS = int(os.getenv("LW_OUTPUT_TOKENS", "4000"))    # what we aim for per completion
 
 # Fixed Future Snapshot horizon (~1 month)
 FUTURE_WEEKS_DEFAULT = 4
@@ -55,12 +51,29 @@ REPLY_TO = st.secrets.get("REPLY_TO", "whatisyourminus@gmail.com")
 # Dev helper: show codes onscreen if email not configured
 DEV_SHOW_CODES = os.getenv("DEV_SHOW_CODES", st.secrets.get("DEV_SHOW_CODES", "0")) == "1"
 
-# -----------------------------
-# Utility / Paths
-# -----------------------------
+# ---- Logo auto-detect (png/webp); optional override via LW_LOGO ----------------
+LOGO_CANDIDATES = [
+    os.getenv("LW_LOGO", "").strip(),
+    "logo.png",
+    "Life-Minus-Work-Logo.png",
+    "Life-Minus-Work-Logo.webp",
+]
 
 def here() -> Path:
     return Path(__file__).parent
+
+def find_logo_path() -> Optional[Path]:
+    for name in LOGO_CANDIDATES:
+        if not name:
+            continue
+        p = here() / name
+        if p.exists():
+            return p
+    return None
+
+# =============================================================================
+# Questions Loading & Utilities
+# =============================================================================
 
 def load_questions(filename="questions.json") -> Tuple[List[dict], List[str]]:
     p = here() / filename
@@ -115,9 +128,9 @@ class PDF(FPDF):
 def setf(pdf: "PDF", style="", size=11):
     pdf.set_font("Helvetica", style=style, size=size)
 
-# -----------------------------
+# =============================================================================
 # FPDF Latin-1 Safety
-# -----------------------------
+# =============================================================================
 
 LATIN1_MAP = {
     "—": "-", "–": "-", "―": "-",
@@ -149,9 +162,9 @@ def mc(pdf: "PDF", text: str, h=6):
 def sc(pdf: "PDF", w, h, text: str, ln=0):
     pdf.cell(w, h, to_latin1(text), ln=ln)
 
-# -----------------------------
-# PDF Drawing Helpers (bars, lines, checkboxes)
-# -----------------------------
+# =============================================================================
+# PDF Drawing Helpers
+# =============================================================================
 
 def hr(pdf: "PDF", y_offset: float = 2.0, gray: int = 220):
     x1, x2 = 10, 200
@@ -190,15 +203,16 @@ def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
         y += 7
     pdf.set_y(y + 2); hr(pdf, y_offset=0)
 
-# -----------------------------
+# =============================================================================
 # Scoring
-# -----------------------------
+# =============================================================================
 
 def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dict[str, int]:
     scores = {t: 0 for t in THEMES}
     for q in questions:
         sel = answers_by_qid.get(q["id"])
-        if not sel: continue
+        if not sel: 
+            continue
         for c in q["choices"]:
             if c["label"] == sel:
                 for k, w in (c.get("weights") or {}).items():
@@ -218,9 +232,9 @@ def q_version_hash(questions: List[dict]) -> str:
     s = json.dumps(questions, sort_keys=True)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
-# -----------------------------
+# =============================================================================
 # Session State
-# -----------------------------
+# =============================================================================
 
 def ensure_state(questions: List[dict]):
     ver = q_version_hash(questions)
@@ -235,9 +249,9 @@ def ensure_state(questions: List[dict]):
         st.session_state["free_by_qid"] = {q["id"]: old_f.get(q["id"], "") for q in questions}
         st.session_state["q_version"] = ver
 
-# -----------------------------
+# =============================================================================
 # OpenAI (lazy import) & AI helpers
-# -----------------------------
+# =============================================================================
 
 def get_openai_client():
     key = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
@@ -267,86 +281,11 @@ AI_SCHEMA_FIELDS = (
     "what_this_really_says, signature_strengths:[], "
     "energy_map:{energizers:[], drainers:[]}, hidden_tensions:[], "
     "watch_out, actions_7d:[], impl_if_then:[], plan_1_week:[], "
-    "balancing_opportunity:[], keep_in_view:[], tiny_progress:[]}"
+    'balancing_opportunity:[], keep_in_view:[], tiny_progress:[]}'
 )
 
-def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
-    """Return (ai_sections_dict, usage_dict, raw_text_head). Sets st.session_state['effective_model']."""
-    usage = {}
-    prompt_ctx = {
-        "first_name": first_name or "",
-        "horizon_weeks": horizon_weeks,
-        "scores": scores,
-        "free": scores_free or {},
-    }
-    raw_text = json.dumps(prompt_ctx)[:800]
-
-    client = get_openai_client()
-    if client is None:
-        st.session_state["effective_model"] = "(no key / safe mode)"
-        return _fallback_ai(scores), usage, raw_text
-
-    system_msg = (
-        "You are a precise reflection coach. "
-        f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}. "
-        "Write vivid, grounded, encouraging content (no fluff), using the user's theme scores and notes. "
-        "Make 'future_snapshot' a short postcard from ~1 month ahead."
-    )
-    user_msg = (
-        "Name: {name}\n"
-        "Horizon: about {weeks} weeks (~1 month)\n"
-        "Theme scores (higher = stronger energy): {scores}\n"
-        "From user's notes (optional): {notes}\n"
-        "Top themes should reflect the score order. Fill every field with specific, helpful content."
-    ).format(
-        name=first_name or "friend",
-        weeks=horizon_weeks,
-        scores=json.dumps(scores),
-        notes=json.dumps(scores_free or {}, ensure_ascii=False),
-    )
-
-    models_to_try = [AI_MODEL, "gpt-4o-mini", "gpt-4o"]
-    last_err = None
-    for m in models_to_try:
-        if not m: continue
-        try:
-            resp = client.chat.completions.create(
-                model=m,
-                temperature=0.7,
-                messages=[{"role": "system", "content": system_msg},
-                          {"role": "user", "content": user_msg}],
-                max_tokens=1200,
-            )
-            txt = (resp.choices[0].message.content or "").strip()
-            blob = _extract_json_blob(txt)
-            data = json.loads(blob)
-
-            usage_obj = getattr(resp, "usage", None)
-            if usage_obj:
-                usage = {
-                    "input": getattr(usage_obj, "prompt_tokens", 0) or 0,
-                    "output": getattr(usage_obj, "completion_tokens", 0) or 0,
-                    "total": getattr(usage_obj, "total_tokens", 0) or 0,
-                }
-
-            if "top_themes" not in data or not isinstance(data["top_themes"], list):
-                data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
-            # sanity keys
-            for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
-                if key not in data: raise ValueError("Missing key: " + key)
-
-            st.session_state["effective_model"] = m
-            return (data, usage, txt[:800])
-        except Exception as e:
-            last_err = e
-            continue
-
-    st.warning(f"AI call fell back to safe content: {last_err}")
-    st.session_state["effective_model"] = "(fallback)"
-    return _fallback_ai(scores), usage, raw_text
-
 def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
-    # Rich fallback shaped like target schema (so PDF still looks good)
+    # Rich fallback shaped like target schema
     return {
         "archetype": "Bold Explorer",
         "core_need": "space to try new selves",
@@ -393,9 +332,97 @@ def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
         "tiny_progress": ["Tried one new thing", "Called someone after event", "Wrote one reflection"],
     }
 
-# -----------------------------
+def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
+    """
+    Returns (ai_sections_dict, usage_dict, raw_text_head).
+    Records st.session_state['effective_model'].
+    """
+    usage = {}
+    prompt_ctx = {
+        "first_name": first_name or "",
+        "horizon_weeks": horizon_weeks,
+        "scores": scores,
+        "free": scores_free or {},
+    }
+    raw_text = json.dumps(prompt_ctx)[:800]
+
+    client = get_openai_client()
+    if client is None:
+        st.session_state["effective_model"] = "(no key / safe mode)"
+        return _fallback_ai(scores), usage, raw_text
+
+    system_msg = (
+        "You are a precise reflection coach.\n"
+        f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}.\n"
+        "Depth requirements:\n"
+        "- Write substantial, concrete content (no fluff).\n"
+        "- 'insights' and 'why_now': 2–3 dense paragraphs each (5–8 sentences per paragraph).\n"
+        "- 'future_snapshot': 8–12 vivid sentences as a short postcard from ~1 month ahead.\n"
+        "- Lists (actions_7d, impl_if_then, plan_1_week, strengths, energizers/drainers): 6–10 items each, specific and actionable.\n"
+        "- Keep language simple, humane, and encouraging.\n"
+    )
+    user_msg = (
+        "Name: {name}\n"
+        "Horizon: about {weeks} weeks (~1 month)\n"
+        "Theme scores (higher = stronger energy): {scores}\n"
+        "From user's notes (optional): {notes}\n"
+        "Top themes should reflect the score order. Fill every field with specific, helpful content."
+    ).format(
+        name=first_name or "friend",
+        weeks=horizon_weeks,
+        scores=json.dumps(scores),
+        notes=json.dumps(scores_free or {}, ensure_ascii=False),
+    )
+
+    # Prefer GPT-5 family; avoid 4o-mini; fall back to 4o if needed
+    models_to_try = [AI_MODEL, "gpt-5", "gpt-5-large", "gpt-5.1", "gpt-4o"]
+    last_err = None
+
+    # Aim for ~4k output tokens (bounded by cap/env)
+    max_out = max(1200, min(DESIRED_OUTPUT_TOKENS, AI_MAX_TOKENS_CAP))
+
+    for m in models_to_try:
+        if not m:
+            continue
+        try:
+            resp = client.chat.completions.create(
+                model=m,
+                temperature=0.7,
+                messages=[{"role": "system", "content": system_msg},
+                          {"role": "user", "content": user_msg}],
+                max_tokens=max_out,
+            )
+            txt = (resp.choices[0].message.content or "").strip()
+            blob = _extract_json_blob(txt)
+            data = json.loads(blob)
+
+            usage_obj = getattr(resp, "usage", None)
+            if usage_obj:
+                usage = {
+                    "input": getattr(usage_obj, "prompt_tokens", 0) or 0,
+                    "output": getattr(usage_obj, "completion_tokens", 0) or 0,
+                    "total": getattr(usage_obj, "total_tokens", 0) or 0,
+                }
+
+            if "top_themes" not in data or not isinstance(data["top_themes"], list):
+                data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+            for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
+                if key not in data: 
+                    raise ValueError("Missing key: " + key)
+
+            st.session_state["effective_model"] = m
+            return (data, usage, txt[:800])
+        except Exception as e:
+            last_err = e
+            continue
+
+    st.warning(f"AI call fell back to safe content: {last_err}")
+    st.session_state["effective_model"] = "(fallback)"
+    return _fallback_ai(scores), usage, raw_text
+
+# =============================================================================
 # Email Helpers (SMTP via Gmail)
-# -----------------------------
+# =============================================================================
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -426,9 +453,9 @@ def send_email(to_addr: str, subject: str, text_body: str, html_body: str | None
 def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
 
-# -----------------------------
-# PDF Builder (full layout like “33”)
-# -----------------------------
+# =============================================================================
+# PDF Builder (full layout like your “33” PDF)
+# =============================================================================
 
 def section_title(pdf: "PDF", title: str, size=14, top_margin=2):
     pdf.ln(top_margin)
@@ -449,13 +476,13 @@ def make_pdf_bytes(
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_page()
 
-    # Logo → title (tighter spacing)
+    # Logo → title (auto-detect png/webp)
     y_after_logo = 18
-    logo = logo_path or (here() / "logo.png")
+    logo = logo_path or find_logo_path()
     logo_found = False
-    if isinstance(logo, Path) and logo.exists():
+    if logo and Path(logo).exists():
         try:
-            img = Image.open(logo).convert("RGBA")
+            img = Image.open(logo).convert("RGBA")   # WEBP/PNG both OK
             tmp = here() / "_logo_tmp.png"
             img.save(tmp, format="PNG")
             pdf.image(str(tmp), x=10, y=10, w=28)
@@ -594,13 +621,15 @@ def make_pdf_bytes(
     out = pdf.output(dest="S")
     if isinstance(out, str):
         out = out.encode("latin-1", errors="ignore")
-    # record logo presence for debug
+
+    # Debug: record logo presence
     st.session_state["logo_found"] = bool(logo_found)
+    st.session_state["logo_path"] = str(logo) if logo else "(none)"
     return out
 
-# -----------------------------
+# =============================================================================
 # Streamlit UI
-# -----------------------------
+# =============================================================================
 
 st.set_page_config(page_title="Life Minus Work — Questionnaire", page_icon="🧭", layout="centered")
 st.title("Life Minus Work — Questionnaire")
@@ -842,7 +871,7 @@ if st.session_state.get("preview_ready"):
                     email=st.session_state.pending_email,
                     scores=scores_build,
                     ai=ai_sections,
-                    logo_path=(here() / "logo.png"),
+                    logo_path=find_logo_path(),
                 )
                 st.session_state["report_key"] = report_key
                 st.session_state["pdf_bytes"] = pdf_bytes
@@ -884,11 +913,11 @@ if st.session_state.get("preview_ready"):
             st.write(f"AI enabled: {ai_enabled()}")
             st.write(f"Requested model: {AI_MODEL}")
             st.write(f"Effective model: {eff}")
-            st.write(f"Max tokens: {AI_MAX_TOKENS_CAP} (fallback {AI_MAX_TOKENS_FALLBACK})")
+            st.write(f"Max tokens target: {DESIRED_OUTPUT_TOKENS} (cap {AI_MAX_TOKENS_CAP})")
             usage = st.session_state.get("ai_usage") or {}
             if usage:
                 st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
             else:
                 st.write("No usage reported by SDK.")
-            st.write(f"Logo found: {st.session_state.get('logo_found', False)}")
+            st.write(f"Logo found: {st.session_state.get('logo_found', False)} at {st.session_state.get('logo_path', '(none)')}")
             st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
