@@ -32,10 +32,9 @@ def _resolve_model(raw: Optional[str]) -> str:
 
 AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-5-mini")))
 
-# Output token targets (can be tuned via secrets or env)
-AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "5000"))           # hard cap we pass to API
-DESIRED_OUTPUT_TOKENS = int(os.getenv("LW_OUTPUT_TOKENS", "4000"))    # what we aim for per completion
-FIVE_ONLY = os.getenv("LW_5_ONLY", st.secrets.get("LW_5_ONLY", "0")) == "1"
+# Output token targets (tunable via secrets or env)
+AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "5000"))           # hard cap passed to API
+DESIRED_OUTPUT_TOKENS = int(os.getenv("LW_OUTPUT_TOKENS", "4000"))    # target length for output
 
 # Fixed Future Snapshot horizon (~1 month)
 FUTURE_WEEKS_DEFAULT = 4
@@ -205,21 +204,6 @@ def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
     pdf.set_y(y + 2); hr(pdf, y_offset=0)
 
 # =============================================================================
-# List Normalizer (prevents gibberish bullets)
-# =============================================================================
-
-def as_list(v) -> List[str]:
-    """Coerce any AI field into a clean list of bullet strings."""
-    if isinstance(v, list):
-        return [str(x).strip() for x in v if str(x).strip()]
-    if isinstance(v, str):
-        s = v.strip()
-        parts = re.split(r"(?:\r?\n|\s*[\u2022\u2023•\-–]\s+)", s)
-        parts = [p.strip(" .;") for p in parts if p and p.strip()]
-        return parts if len(parts) > 1 else [s]
-    return []
-
-# =============================================================================
 # Scoring
 # =============================================================================
 
@@ -348,6 +332,25 @@ def _fallback_ai(scores: Dict[str, int]) -> Dict[str, Any]:
         "tiny_progress": ["Tried one new thing", "Called someone after event", "Wrote one reflection"],
     }
 
+# =============================================================================
+# List normalizer to prevent per-character bullets
+# =============================================================================
+
+def as_list(v) -> List[str]:
+    """Coerce any AI field into a clean list of bullet strings."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if isinstance(v, str):
+        s = v.strip()
+        parts = re.split(r"(?:\r?\n|\r|^\s*[-•–]\s+|[\u2022\u2023]\s+)", s)
+        parts = [p.strip(" .;") for p in parts if p and p.strip()]
+        return parts if len(parts) > 1 else [s]
+    return []
+
+# =============================================================================
+# AI Runner
+# =============================================================================
+
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
     """
     Returns (ai_sections_dict, usage_dict, raw_text_head).
@@ -365,7 +368,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     client = get_openai_client()
     if client is None:
         st.session_state["effective_model"] = "(no key / safe mode)"
-        st.session_state["model_attempts"] = [("(no client)", "skipped")]
+        st.session_state["model_attempts"] = [("none", "no-client")]
         return _fallback_ai(scores), usage, raw_text
 
     system_msg = (
@@ -392,16 +395,14 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         notes=json.dumps(scores_free or {}, ensure_ascii=False),
     )
 
-    # Prefer GPT-5 family; avoid 4o-mini; optional 5-only mode
-    models_to_try = [AI_MODEL, "gpt-5", "gpt-5-large", "gpt-5.1"]
-    if not FIVE_ONLY:
-        models_to_try.append("gpt-4o")
+    # Prefer GPT-5 family; avoid 4o-mini; fall back to 4o if needed
+    models_to_try = [AI_MODEL, "gpt-5", "gpt-5-large", "gpt-5.1", "gpt-4o"]
+    last_err = None
+    attempts: List[Tuple[str, str]] = []
 
     # Aim for ~4k output tokens (bounded by cap/env)
     max_out = max(1200, min(DESIRED_OUTPUT_TOKENS, AI_MAX_TOKENS_CAP))
 
-    attempts = []
-    last_err = None
     for m in models_to_try:
         if not m:
             continue
@@ -479,7 +480,7 @@ def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
 
 # =============================================================================
-# PDF Builder (full layout like your “33” PDF)
+# PDF Builder (full layout like your “33” PDF) — now using as_list() everywhere
 # =============================================================================
 
 def section_title(pdf: "PDF", title: str, size=14, top_margin=2):
@@ -563,7 +564,7 @@ def make_pdf_bytes(
     # What this really says + Insights + Why Now + Future Snapshot
     if ai.get("what_this_really_says"):
         section_title(pdf, "What this really says about you")
-        mc(pdf, ai["what_this_really_says"]); hr(pdf)
+        mc(pdf, ai["what_this_rereally_says"] if "what_this_rereally_says" in ai else ai["what_this_really_says"]); hr(pdf)
 
     if ai.get("insights"):
         section_title(pdf, "Insights"); mc(pdf, "A practical, encouraging synthesis of your answers.")
@@ -720,8 +721,10 @@ if st.session_state.get("preview_ready"):
             s = line.strip()
             if 3 <= len(s) <= 80:
                 keepers.append(s)
-                if len(keepers) >= 3: break
-        if len(keepers) >= 3: break
+                if len(keepers) >= 3:
+                    break
+        if len(keepers) >= 3:
+            break
 
     with st.container():
         st.subheader("Your Mini Report (Preview)")
@@ -863,60 +866,91 @@ if st.session_state.get("preview_ready"):
                     else:
                         st.error(f"Couldn’t resend the code. {e}")
 
-    # Verified → generate once, then reuse
-    if st.session_state.verify_state == "verified":
-        answers_by_qid = st.session_state.get("answers_by_qid", {})
-        free_by_qid = st.session_state.get("free_by_qid", {})
-        key_payload = {
-            "email": st.session_state.pending_email,
-            "first_name": st.session_state.get("first_name_input", ""),
-            "answers": answers_by_qid,
-            "free": free_by_qid,
-            "model": AI_MODEL,
-        }
-        report_key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
-        need_build = (
-            st.session_state.get("report_key") != report_key
-            or st.session_state.get("pdf_bytes") is None
-            or st.session_state.get("ai_sections") is None
-        )
-        if need_build:
-            with st.status("Generating your report…", expanded=False) as s:
-                scores_build = compute_scores(questions, answers_by_qid)
-                free_responses = {qid: txt for qid, txt in (free_by_qid or {}).items() if txt and txt.strip()}
-                ai_sections, usage, raw_head = run_ai(
-                    first_name=st.session_state.get("first_name_input", ""),
-                    horizon_weeks=FUTURE_WEEKS_DEFAULT,
-                    scores=scores_build,
-                    scores_free=free_responses,
-                )
-                s.update(label="Building PDF…")
-                pdf_bytes = make_pdf_bytes(
-                    first_name=st.session_state.get("first_name_input", ""),
-                    email=st.session_state.pending_email,
-                    scores=scores_build,
-                    ai=ai_sections,
-                    logo_path=find_logo_path(),
-                )
-                st.session_state["report_key"] = report_key
-                st.session_state["pdf_bytes"] = pdf_bytes
-                st.session_state["ai_sections"] = ai_sections
-                st.session_state["scores_final"] = scores_build
-                st.session_state["ai_usage"] = usage
-                st.session_state["raw_head"] = raw_head
-                s.update(label="Report ready.", state="complete")
-
-        # Render from cache
-        st.success("Your email is verified.")
-        st.subheader("Your Complete Reflection Report")
-        st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
-        pdf_bytes = st.session_state.get("pdf_bytes", b"")
-        if pdf_bytes:
-            st.download_button(
-                "Download PDF",
-                data=pdf_bytes,
-                file_name="LifeMinusWork_Reflection_Report.pdf",
-                mime="application/pdf",
+# Verified → generate once, then reuse
+if st.session_state.get("verify_state") == "verified":
+    answers_by_qid = st.session_state.get("answers_by_qid", {})
+    free_by_qid = st.session_state.get("free_by_qid", {})
+    key_payload = {
+        "email": st.session_state.pending_email,
+        "first_name": st.session_state.get("first_name_input", ""),
+        "answers": answers_by_qid,
+        "free": free_by_qid,
+        "model": AI_MODEL,
+    }
+    report_key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
+    need_build = (
+        st.session_state.get("report_key") != report_key
+        or st.session_state.get("pdf_bytes") is None
+        or st.session_state.get("ai_sections") is None
+    )
+    if need_build:
+        with st.status("Generating your report…", expanded=False) as s:
+            scores_build = compute_scores(questions, answers_by_qid)
+            free_responses = {qid: txt for qid, txt in (free_by_qid or {}).items() if txt and txt.strip()}
+            ai_sections, usage, raw_head = run_ai(
+                first_name=st.session_state.get("first_name_input", ""),
+                horizon_weeks=FUTURE_WEEKS_DEFAULT,
+                scores=scores_build,
+                scores_free=free_responses,
             )
-            with st.expander("Email me the PDF", expanded=False):
-                if st.button("Send report to my email"):
+            s.update(label="Building PDF…")
+            pdf_bytes = make_pdf_bytes(
+                first_name=st.session_state.get("first_name_input", ""),
+                email=st.session_state.pending_email,
+                scores=scores_build,
+                ai=ai_sections,
+                logo_path=find_logo_path(),
+            )
+            st.session_state["report_key"] = report_key
+            st.session_state["pdf_bytes"] = pdf_bytes
+            st.session_state["ai_sections"] = ai_sections
+            st.session_state["scores_final"] = scores_build
+            st.session_state["ai_usage"] = usage
+            st.session_state["raw_head"] = raw_head
+            s.update(label="Report ready.", state="complete")
+
+    # Render from cache
+    st.success("Your email is verified.")
+    st.subheader("Your Complete Reflection Report")
+    st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
+    pdf_bytes = st.session_state.get("pdf_bytes", b"")
+    if pdf_bytes:
+        st.download_button(
+            "Download PDF",
+            data=pdf_bytes,
+            file_name="LifeMinusWork_Reflection_Report.pdf",
+            mime="application/pdf",
+        )
+        with st.expander("Email me the PDF", expanded=False):
+            if st.button("Send report to my email"):
+                try:
+                    send_email(
+                        to_addr=st.session_state.pending_email,
+                        subject="Your Life Minus Work — Reflection Report",
+                        text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
+                        html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
+                        attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
+                    )
+                    st.success("We’ve emailed your report.")
+                except Exception as e:
+                    st.error(f"Could not email the PDF. {e}")
+
+    # Debug
+    with st.expander("AI status (debug)", expanded=False):
+        eff = st.session_state.get("effective_model", "(unknown)")
+        st.write(f"AI enabled: {ai_enabled()}")
+        st.write(f"Requested model: {AI_MODEL}")
+        st.write(f"Effective model: {eff}")
+        st.write(f"Max tokens target: {DESIRED_OUTPUT_TOKENS} (cap {AI_MAX_TOKENS_CAP})")
+        usage = st.session_state.get("ai_usage") or {}
+        if usage:
+            st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
+        else:
+            st.write("No usage reported by SDK.")
+        st.write(f"Logo found: {st.session_state.get('logo_found', False)} at {st.session_state.get('logo_path', '(none)')}")
+        att = st.session_state.get("model_attempts") or []
+        if att:
+            st.write("Model attempts:")
+            for m, status in att:
+                st.write(f" - {m}: {status}")
+        st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
