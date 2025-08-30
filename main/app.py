@@ -62,8 +62,8 @@ THEMES: List[str] = ["Identity", "Growth", "Connection", "Peace", "Adventure", "
 
 # OpenAI model + token caps; these only matter when AI is enabled.
 AI_MODEL: str = "gpt-5-mini"
-AI_MAX_TOKENS_CAP: int = 7000
-AI_MAX_TOKENS_FALLBACK: int = 6000
+AI_MAX_TOKENS_CAP: int = 8000
+AI_MAX_TOKENS_FALLBACK: int = 7000
 
 # Future Snapshot horizon: fixed internally to 4 weeks,
 # but all user-facing language is "1 month ahead".
