@@ -25,8 +25,8 @@ from PIL import Image
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
 AI_MODEL = "gpt-5-mini"
-AI_MAX_TOKENS_CAP = 7000
-AI_MAX_TOKENS_FALLBACK = 6000
+AI_MAX_TOKENS_CAP = 8000
+AI_MAX_TOKENS_FALLBACK = 7000
 
 # Future Snapshot horizon: fixed internally; wording everywhere is "1 month ahead"
 FUTURE_WEEKS_DEFAULT = 4
