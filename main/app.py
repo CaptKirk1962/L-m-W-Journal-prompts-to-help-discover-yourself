@@ -33,7 +33,7 @@ def _resolve_model(raw: Optional[str]) -> str:
 AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-5-mini")))
 
 # Output token targets (can be tuned via secrets or env)
-AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "4500"))           # hard cap we pass to API
+AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "5000"))           # hard cap we pass to API
 DESIRED_OUTPUT_TOKENS = int(os.getenv("LW_OUTPUT_TOKENS", "4000"))    # what we aim for per completion
 
 # Fixed Future Snapshot horizon (~1 month)
