@@ -1,11 +1,12 @@
 # app.py — Life Minus Work (Streamlit)
 
 from __future__ import annotations
-import os, json, re, hashlib, unicodedata, time, ssl, smtplib
+import os, json, re, hashlib, unicodedata, time, ssl, smtplib, csv
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from email.message import EmailMessage
 from email.utils import formataddr
+from datetime import datetime, timezone
 
 import streamlit as st
 from fpdf import FPDF
@@ -49,8 +50,17 @@ GMAIL_APP_PASSWORD = st.secrets.get("GMAIL_APP_PASSWORD", "")
 SENDER_NAME = st.secrets.get("SENDER_NAME", "Life Minus Work")
 REPLY_TO = st.secrets.get("REPLY_TO", "whatisyourminus@gmail.com")
 
-# Dev helper: show codes onscreen if email not configured
-DEV_SHOW_CODES = os.getenv("DEV_SHOW_CODES", st.secrets.get("DEV_SHOW_CODES", "0")) == "1"
+# Optional CC/BCC + admin-notify on download
+CC_TO_DEFAULT = st.secrets.get("LW_CC", "")
+BCC_TO_DEFAULT = st.secrets.get("LW_BCC", "")
+BCC_ON_DOWNLOAD = (os.getenv("LW_BCC_ON_DOWNLOAD", st.secrets.get("LW_BCC_ON_DOWNLOAD", "0")) == "1")
+NOTIFY_TO = st.secrets.get("LW_NOTIFY_TO", "")  # if empty, falls back to BCC_TO_DEFAULT, then GMAIL_USER
+
+# Admin toggle to view/download captured emails in the UI
+SHOW_EMAILS_ADMIN = (os.getenv("LW_SHOW_EMAILS_ADMIN", st.secrets.get("LW_SHOW_EMAILS_ADMIN", "0")) == "1")
+
+def here() -> Path:
+    return Path(__file__).parent
 
 # ---- Logo auto-detect (png/webp); optional override via LW_LOGO ----------------
 LOGO_CANDIDATES = [
@@ -59,9 +69,6 @@ LOGO_CANDIDATES = [
     "Life-Minus-Work-Logo.png",
     "Life-Minus-Work-Logo.webp",
 ]
-
-def here() -> Path:
-    return Path(__file__).parent
 
 def find_logo_path() -> Optional[Path]:
     for name in LOGO_CANDIDATES:
@@ -251,6 +258,45 @@ def ensure_state(questions: List[dict]):
         st.session_state["q_version"] = ver
 
 # =============================================================================
+# Email capture CSV (no extra deps)
+# =============================================================================
+
+EMAIL_LOG_CSV = here() / "emails.csv"
+
+def log_email_capture(email: str, first_name: str = "", meta: dict | None = None):
+    """Append a row to emails.csv (no extra deps)."""
+    meta = meta or {}
+    row = {
+        "email": (email or "").strip().lower(),
+        "first_name": (first_name or "").strip(),
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "model": st.session_state.get("effective_model") or AI_MODEL,
+        "scores": json.dumps(meta.get("scores") or {}),
+        "source": meta.get("source", "verify"),
+    }
+    created = not EMAIL_LOG_CSV.exists()
+    with EMAIL_LOG_CSV.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=row.keys())
+        if created:
+            w.writeheader()
+        w.writerow(row)
+
+def load_email_log() -> list[dict]:
+    if not EMAIL_LOG_CSV.exists():
+        return []
+    with EMAIL_LOG_CSV.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+def group_emails_by_domain(rows: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for r in rows:
+        email = (r.get("email") or "").strip().lower()
+        if "@" in email:
+            domain = email.split("@", 1)[1]
+            counts[domain] = counts.get(domain, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+
+# =============================================================================
 # OpenAI (lazy import) & AI helpers
 # =============================================================================
 
@@ -349,7 +395,7 @@ def as_list(v) -> List[str]:
     return []
 
 # =============================================================================
-# AI Runner — GPT-5 mini only, with 7000→6000 retry (max_completion_tokens)
+# AI Runner — GPT-5 mini only, with 7000→6000 retry (max_completion_tokens, no temperature)
 # =============================================================================
 
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
@@ -396,7 +442,6 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         notes=json.dumps(scores_free or {}, ensure_ascii=False),
     )
 
-    # GPT-5 mini only; two passes with 7000 then 6000 completion tokens.
     model = AI_MODEL  # "gpt-5-mini"
     attempts: List[Tuple[str, str]] = []
     for max_out in (AI_MAX_TOKENS_CAP, AI_MAX_TOKENS_FALLBACK):
@@ -407,82 +452,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_msg},
                 ],
-                # IMPORTANT: GPT-5 mini expects max_completion_tokens; don't send temperature.
-                "max_completion_tokens": int(max_out),
-            }
-            st.session_state["param_used"] = "max_completion_tokens"
-            resp = client.chat.completions.create(**kwargs)
-
-            txt = (resp.choices[0].message.content or "").strip()
-            blob = _extract_json_blob(txt)
-            data = json.loads(blob)
-
-            usage_obj = getattr(resp, "usage", None)
-            if usage_obj:
-                inp = getattr(usage_obj, "prompt_tokens", None)
-                out = getattr(usage_obj, "completion_tokens", None) or getattr(usage_obj, "output_tokens", None)
-                tot = getattr(usage_obj, "total_tokens", None)
-                usage = {
-                    "input": inp or 0,
-                    "output": out or 0,
-                    "total": tot or ((inp or 0) + (out or 0)),
-                }
-
-            if "top_themes" not in data or not isinstance(data["top_themes"], list):
-                data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
-            for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
-                if key not in data:
-                    raise ValueError("Missing key: " + key)
-
-            st.session_state["effective_model"] = model
-            attempts.append((f"{model} @ {max_out}", "ok"))
-            st.session_state["model_attempts"] = attempts
-            return (data, usage, txt[:800])
-        except Exception as e:
-            attempts.append((f"{model} @ {max_out}", f"error: {e}"))
-            continue
-
-    st.warning("AI call fell back to safe content.")
-    st.session_state["effective_model"] = "(fallback)"
-    st.session_state["model_attempts"] = attempts
-    return _fallback_ai(scores), usage, raw_text
-
-    system_msg = (
-        "You are a precise reflection coach.\n"
-        f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}.\n"
-        "Depth requirements:\n"
-        "- Write substantial, concrete content (no fluff).\n"
-        "- 'insights' and 'why_now': 2–3 dense paragraphs each (5–8 sentences per paragraph).\n"
-        "- 'future_snapshot': 8–12 vivid sentences as a short postcard from ~1 month ahead.\n"
-        "- Lists (actions_7d, impl_if_then, plan_1_week, strengths, energizers/drainers): 6–10 items each, specific and actionable.\n"
-        "- All list fields MUST be JSON arrays of short strings (never a paragraph).\n"
-        "- Keep language simple, humane, and encouraging.\n"
-    )
-    user_msg = (
-        "Name: {name}\n"
-        "Horizon: about {weeks} weeks (~1 month)\n"
-        "Theme scores (higher = stronger energy): {scores}\n"
-        "From user's notes (optional): {notes}\n"
-        "Top themes should reflect the score order. Fill every field with specific, helpful content."
-    ).format(
-        name=first_name or "friend",
-        weeks=horizon_weeks,
-        scores=json.dumps(scores),
-        notes=json.dumps(scores_free or {}, ensure_ascii=False),
-    )
-
-    model = AI_MODEL  # gpt-5-mini
-    attempts: List[Tuple[str, str]] = []
-    for max_out in (AI_MAX_TOKENS_CAP, AI_MAX_TOKENS_FALLBACK):
-        try:
-            kwargs = {
-                "model": model,
-                "temperature": 0.7,
-                "messages": [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                # GPT-5 family uses max_completion_tokens
+                # GPT-5 mini expects max_completion_tokens; don't send temperature.
                 "max_completion_tokens": int(max_out),
             }
             st.session_state["param_used"] = "max_completion_tokens"
@@ -523,7 +493,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
     return _fallback_ai(scores), usage, raw_text
 
 # =============================================================================
-# Email Helpers (SMTP via Gmail)
+# Email Helpers (SMTP via Gmail) — with optional CC/BCC
 # =============================================================================
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -532,7 +502,8 @@ def valid_email(e: str) -> bool:
     return bool(EMAIL_RE.match((e or "").strip()))
 
 def send_email(to_addr: str, subject: str, text_body: str, html_body: str | None = None,
-               attachments: list[tuple[str, bytes, str]] | None = None):
+               attachments: list[tuple[str, bytes, str]] | None = None,
+               cc: Optional[str] = None, bcc: Optional[str] = None):
     if not (GMAIL_USER and GMAIL_APP_PASSWORD):
         raise RuntimeError("Email not configured: set GMAIL_USER and GMAIL_APP_PASSWORD in Streamlit secrets.")
     msg = EmailMessage()
@@ -540,6 +511,10 @@ def send_email(to_addr: str, subject: str, text_body: str, html_body: str | None
     msg["To"] = to_addr
     msg["Subject"] = subject
     msg["Reply-To"] = REPLY_TO
+    if cc:
+        msg["Cc"] = cc
+    if bcc:
+        msg["Bcc"] = bcc
     msg.set_content(text_body or "")
     if html_body:
         msg.add_alternative(html_body, subtype="html")
@@ -554,6 +529,37 @@ def send_email(to_addr: str, subject: str, text_body: str, html_body: str | None
 
 def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
+
+def maybe_send_admin_copy_on_download(pdf_bytes: bytes, report_key: str, user_email: str, first_name: str):
+    """
+    If BCC_ON_DOWNLOAD is enabled, send an admin copy when the report is generated,
+    so you still receive it even if the user only clicks Download (no email action).
+    """
+    if not BCC_ON_DOWNLOAD:
+        return
+    if not pdf_bytes:
+        return
+    # Avoid duplicates for the same build
+    sent_key = st.session_state.get("admin_copy_sent_key")
+    if sent_key == report_key:
+        return
+    notify_to = (NOTIFY_TO or BCC_TO_DEFAULT or GMAIL_USER).strip()
+    if not notify_to:
+        return
+    try:
+        subj = f"[Admin Copy] Life Minus Work — Report for {first_name or '-'} <{user_email or '-'}>"
+        txt = f"Admin copy for {first_name or '-'} <{user_email or '-'}>. Report attached."
+        html = f"<p>Admin copy for <strong>{first_name or '-'}</strong> &lt;{user_email or '-'}&gt;. Report attached.</p>"
+        send_email(
+            to_addr=notify_to,
+            subject=subj,
+            text_body=txt,
+            html_body=html,
+            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")]
+        )
+        st.session_state["admin_copy_sent_key"] = report_key
+    except Exception as e:
+        st.warning(f"(Admin copy) {e}")
 
 # =============================================================================
 # PDF Builder (full layout like your “33” PDF) — using as_list() everywhere
@@ -725,7 +731,7 @@ def make_pdf_bytes(
         out = out.encode("latin-1", errors="ignore")
 
     # Debug: record logo presence
-    st.session_state["logo_found"] = bool(logo_found)
+    st.session_state["logo_found"] = True if logo_found else False
     st.session_state["logo_path"] = str(logo) if logo else "(none)"
     return out
 
@@ -918,6 +924,17 @@ if st.session_state.get("preview_ready"):
             elif v.strip() == st.session_state.pending_code:
                 st.success("Verified! Your full report is unlocked.")
                 st.session_state.verify_state = "verified"
+
+                # Capture email immediately (even if AI/PDF fails later)
+                try:
+                    sc = compute_scores(questions, st.session_state["answers_by_qid"])
+                    log_email_capture(
+                        st.session_state.pending_email,
+                        st.session_state.get("first_name_input", ""),
+                        {"scores": sc, "source": "verify"}
+                    )
+                except Exception as e:
+                    st.warning(f"(Email logging) {e}")
             else:
                 st.error("That code didn’t match. Please try again.")
         if resend:
@@ -985,6 +1002,17 @@ if st.session_state.get("verify_state") == "verified":
             st.session_state["raw_head"] = raw_head
             s.update(label="Report ready.", state="complete")
 
+            # NEW: send admin copy now if configured, so you still get it when user only downloads
+            try:
+                maybe_send_admin_copy_on_download(
+                    pdf_bytes=pdf_bytes,
+                    report_key=report_key,
+                    user_email=st.session_state.pending_email,
+                    first_name=st.session_state.get("first_name_input", "")
+                )
+            except Exception as e:
+                st.warning(f"(Admin copy send) {e}")
+
     # Render from cache
     st.success("Your email is verified.")
     st.subheader("Your Complete Reflection Report")
@@ -1006,6 +1034,8 @@ if st.session_state.get("verify_state") == "verified":
                         text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
                         html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
                         attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
+                        cc=(CC_TO_DEFAULT or None),
+                        bcc=(BCC_TO_DEFAULT or None),
                     )
                     st.success("We’ve emailed your report.")
                 except Exception as e:
@@ -1028,3 +1058,24 @@ if st.session_state.get("verify_state") == "verified":
             for m, status in att:
                 st.write(f"    {m}: {status}")
         st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
+
+# =============================================================================
+# Admin: captured emails
+# =============================================================================
+
+if SHOW_EMAILS_ADMIN:
+    with st.expander("Captured emails (admin)", expanded=False):
+        rows = load_email_log()
+        st.write(f"Total captured: {len(rows)}")
+        if rows:
+            st.dataframe(rows, use_container_width=True)
+            st.markdown("**By domain:**")
+            st.json(group_emails_by_domain(rows))
+            st.download_button(
+                "Download emails.csv",
+                data=EMAIL_LOG_CSV.read_bytes(),
+                file_name="emails.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("No emails captured yet.")
