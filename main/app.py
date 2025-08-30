@@ -1,5 +1,6 @@
 # app.py — Life Minus Work (Streamlit)
 # Spinner-safe, AI-enabled, email-gated full report, improved PDF aesthetics, Latin-1-safe.
+# CHANGE: render full report immediately after Verify (no st.rerun), without jumping to top.
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, time, ssl, smtplib
@@ -514,7 +515,7 @@ for i, q in enumerate(questions, start=1):
         st.session_state["free_by_qid"].pop(q["id"], None)
 
 st.divider()
-# Removed the "Future Snapshot" explanatory block per request
+# (Future Snapshot explainer removed earlier as requested)
 
 # Submit basic answers to show Mini Report preview
 with st.form("mini_form"):
@@ -525,7 +526,7 @@ if submit_preview:
     st.session_state["preview_ready"] = True
 
 # -----------------------------
-# Mini Report (enhanced)
+# Mini Report (enhanced) + Email Gate
 # -----------------------------
 if st.session_state.get("preview_ready"):
     scores = compute_scores(questions, st.session_state["answers_by_qid"])
@@ -548,7 +549,6 @@ if st.session_state.get("preview_ready"):
         st.subheader("Your Mini Report (Preview)")
         st.write(f"**Top themes:** {', '.join(top3) if top3 else '-'}")
 
-        # Simple bar chart; fallback to table if needed
         if scores:
             try:
                 st.bar_chart({k: v for k, v in sorted(scores.items(), key=lambda kv: kv[0])})
@@ -608,6 +608,9 @@ if st.session_state.get("preview_ready"):
     st.divider()
     st.subheader("Unlock your complete Reflection Report")
     st.write("We’ll email a 6-digit code to verify it’s really you. No spam—ever.")
+
+    # Track if we rendered the full report already in this run
+    full_rendered = False
 
     # Step A: Collect email & send code
     if st.session_state.verify_state == "collect":
@@ -669,7 +672,7 @@ if st.session_state.get("preview_ready"):
             elif v.strip() == st.session_state.pending_code:
                 st.success("Verified! Your full report is unlocked.")
                 st.session_state.verify_state = "verified"
-                # No st.rerun() here to avoid jumping to top
+                # NOTE: no st.rerun(); we render the full report immediately below
             else:
                 st.error("That code didn’t match. Please try again.")
         if resend:
@@ -696,6 +699,71 @@ if st.session_state.get("preview_ready"):
 
     # Step C: Verified → build full report, download & email PDF
     elif st.session_state.verify_state == "verified":
+        st.success("Your email is verified.")
+        scores = compute_scores(questions, st.session_state["answers_by_qid"])
+        top3 = top_n_themes(scores, 3)
+        free_responses = {qid: txt for qid, txt in (st.session_state.get("free_by_qid") or {}).items() if txt and txt.strip()}
+
+        ai_sections, usage, raw_head = run_ai(
+            first_name=st.session_state.get("first_name_input", first_name),
+            horizon_weeks=horizon_weeks,
+            scores=scores,
+            scores_free=free_responses,
+        )
+
+        pdf_bytes = b""
+        try:
+            pdf_bytes = make_pdf_bytes(
+                first_name=st.session_state.get("first_name_input", first_name),
+                email=st.session_state.pending_email,
+                scores=scores,
+                top3=top3,
+                ai=ai_sections,
+                horizon_weeks=horizon_weeks,
+                logo_path=(here() / "logo.png") if (here() / "logo.png").exists() else None,
+            )
+        except Exception as e:
+            st.error("We hit an issue while building the PDF.")
+            st.exception(e)
+
+        st.subheader("Your Complete Reflection Report")
+        st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
+        if pdf_bytes:
+            st.download_button(
+                "Download PDF",
+                data=pdf_bytes,
+                file_name="LifeMinusWork_Reflection_Report.pdf",
+                mime="application/pdf",
+            )
+
+            with st.expander("Email me the PDF", expanded=False):
+                if st.button("Send report to my email"):
+                    try:
+                        send_email(
+                            to_addr=st.session_state.pending_email,
+                            subject="Your Life Minus Work — Reflection Report",
+                            text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
+                            html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
+                            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
+                        )
+                        st.success("We’ve emailed your report.")
+                    except Exception as e:
+                        st.error(f"Could not email the PDF. {e}")
+
+        with st.expander("AI status (debug)", expanded=False):
+            st.write(f"AI enabled: {ai_enabled()}")
+            st.write(f"Model: {AI_MODEL}")
+            st.write(f"Max tokens: {AI_MAX_TOKENS_CAP} (fallback {AI_MAX_TOKENS_FALLBACK})")
+            if usage:
+                st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
+            else:
+                st.write("No usage returned (fallback).")
+            st.text("Raw head (first 800 chars)"); st.code(raw_head or "(empty)")
+        full_rendered = True  # mark rendered
+
+    # --- Render full report immediately if we just moved to 'verified' in this same run ---
+    if st.session_state.verify_state == "verified" and not full_rendered:
+        # This is the same block as above, duplicated intentionally so the UI updates without st.rerun()
         st.success("Your email is verified.")
         scores = compute_scores(questions, st.session_state["answers_by_qid"])
         top3 = top_n_themes(scores, 3)
