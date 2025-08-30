@@ -160,6 +160,27 @@ def two_cols_lists(pdf: FPDF, left_title: str, left_items: List[str],
     pdf.ln(2)
     setf(pdf, "B", 12); mc(pdf, right_title); setf(pdf, "", 11); bullet_list(pdf, right_items)
 
+def checkbox_line(pdf: FPDF, text: str, line_height: float = 8.0):
+    # draw an empty square, then the text
+    x = pdf.get_x()
+    y = pdf.get_y()
+    box = 4.5
+    pdf.rect(x, y + 2, box, box)
+    pdf.set_xy(x + box + 3, y)
+    mc(pdf, text, h=line_height)
+
+def signature_week_block(pdf: FPDF, steps: list[str]):
+    section_break(pdf, "Signature Week - At a glance",
+                  "A simple plan you can print or screenshot. Check items off as you go.")
+    setf(pdf, "", 12)
+    for step in steps:
+        checkbox_line(pdf, step)
+
+def tiny_progress_block(pdf: FPDF, milestones: list[str]):
+    section_break(pdf, "Tiny Progress Tracker", "Three tiny milestones you can celebrate this week.")
+    setf(pdf, "", 12)
+    for m in milestones:
+        checkbox_line(pdf, m)
 
 # ---------- Scoring ----------
 def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dict[str, int]:
@@ -383,15 +404,10 @@ def make_pdf_bytes(
     draw_scores_barchart(pdf, scores)
 
     # ===== From your words =====
-    fyw = ai.get("from_your_words") or {}
-    if fyw.get("summary") or fyw.get("keepers"):
-        section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
-        if fyw.get("summary"): mc(pdf, fyw["summary"])
-        if fyw.get("keepers"):
-            setf(pdf, "B", 12); mc(pdf, "Keepers")
-            setf(pdf, "", 11)
-            for k in fyw["keepers"]:
-                mc(pdf, f'* "{k}"')
+   fyw = ai.get("from_your_words") or {}
+if fyw.get("summary"):
+    section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
+    mc(pdf, fyw["summary"])
 
     # ===== One-liners & Personal pledge =====
     if ai.get("one_liners_to_keep"):
@@ -459,19 +475,34 @@ def make_pdf_bytes(
     setf(pdf, "B", 12); mc(pdf, "Next Page: Printable 'Signature Week - At a glance' + Tiny Progress Tracker")
     setf(pdf, "", 11); mc(pdf, "Tip: Put this on your fridge, desk, or phone notes.")
 
-    # ===== Page 2: Signature Week & Tiny Progress =====
-    pdf.add_page()
-    section_break(pdf, "Signature Week - At a glance", "A simple plan you can print or screenshot.")
-    tiny = ai.get("tiny_progress", []) or ["Finish one rep", "Invite one person", "Take one 10m walk"]
-    setf(pdf, "", 12)
-    for t in tiny:
-        sc(pdf, 8, 8, "[ ]"); sc(pdf, 0, 8, t); pdf.ln(8)
+   # ===== Page 2: Signature Week & Tiny Progress =====
+pdf.add_page()
 
-    pdf.ln(4)
-    setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
-    pdf.ln(6)
-    setf(pdf, "", 9)
-    mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
+# If AI provided a 1-week plan, use it; otherwise show a friendly default layout
+plan = ai.get("plan_1_week") or [
+    "Day 1 (Mon): Review ideas list 10 min; pick one micro-adventure",
+    "Day 2 (Tue): Invite one person with a clear, low-effort plan",
+    "Day 3 (Wed): Prep a one-line purpose and a simple backup",
+    "Day 4 (Thu): Do the micro-adventure (2–4 hrs) or skill practice",
+    "Day 5 (Fri): Send a short thank-you or highlight",
+    "Day 6 (Sat): Reflect 5–10 min; one lesson + one joy",
+    "Day 7 (Sun): Rest; add two fresh ideas to the list",
+]
+signature_week_block(pdf, plan)
+
+pdf.ln(2)
+tiny = ai.get("tiny_progress") or [
+    "Choose one small new activity + invite someone",
+    "Capture one lesson + one gratitude after the activity",
+    "Block a weekly 10-minute planning slot",
+]
+tiny_progress_block(pdf, tiny)
+
+pdf.ln(6)
+setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
+pdf.ln(6)
+setf(pdf, "", 9)
+mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
 
     out = pdf.output(dest="S")
     if isinstance(out, str):
