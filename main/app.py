@@ -160,27 +160,6 @@ def two_cols_lists(pdf: FPDF, left_title: str, left_items: List[str],
     pdf.ln(2)
     setf(pdf, "B", 12); mc(pdf, right_title); setf(pdf, "", 11); bullet_list(pdf, right_items)
 
-def checkbox_line(pdf: FPDF, text: str, line_height: float = 8.0):
-    # draw an empty square, then the text
-    x = pdf.get_x()
-    y = pdf.get_y()
-    box = 4.5
-    pdf.rect(x, y + 2, box, box)
-    pdf.set_xy(x + box + 3, y)
-    mc(pdf, text, h=line_height)
-
-def signature_week_block(pdf: FPDF, steps: list[str]):
-    section_break(pdf, "Signature Week - At a glance",
-                  "A simple plan you can print or screenshot. Check items off as you go.")
-    setf(pdf, "", 12)
-    for step in steps:
-        checkbox_line(pdf, step)
-
-def tiny_progress_block(pdf: FPDF, milestones: list[str]):
-    section_break(pdf, "Tiny Progress Tracker", "Three tiny milestones you can celebrate this week.")
-    setf(pdf, "", 12)
-    for m in milestones:
-        checkbox_line(pdf, m)
 
 # ---------- Scoring ----------
 def compute_scores(questions: List[dict], answers_by_qid: Dict[str, str]) -> Dict[str, int]:
@@ -363,50 +342,56 @@ def make_pdf_bytes(
     email: str,
     scores: Dict[str, int],
     top3: List[str],
-    ai: dict,
+    ai: Dict[str, any],
     horizon_weeks: int,
-    logo_path: Optional[Path],
+    logo_path: Optional[Path] = None
 ) -> bytes:
-    pdf = PDF(orientation="P", unit="mm", format="A4")
-    pdf.set_margins(10, 10, 10)
+    pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_page()
-    setf(pdf, "", 12)
 
-    # Logo if available
-    if logo_path and logo_path.exists():
+    # Logo then space then title (prevents overlap)
+    y_after_logo = 12
+    if logo_path and Path(logo_path).exists():
         try:
-            with Image.open(logo_path) as img:
-                img = img.convert("RGB")
-                logo_temp = Path("/tmp/lmw_logo.png")
-                img.save(logo_temp, "PNG")
-                pdf.image(str(logo_temp), x=10, y=8, w=30)
+            img = Image.open(logo_path).convert("RGBA")
+            tmp = here() / "_logo_tmp.png"
+            img.save(tmp, format="PNG")
+            pdf.image(str(tmp), x=10, y=10, w=28)
+            y_after_logo = 44
         except Exception:
-            pass
+            y_after_logo = 24
+    pdf.set_y(y_after_logo)
 
     # Title
-    setf(pdf, "B", 20); mc(pdf, "Your Reflection Report", h=8)
-    setf(pdf, "I", 11)
-    ts = datetime.datetime.now().strftime("%B %d, %Y")
-    mc(pdf, f"Generated for {first_name or 'you'} on {ts}")
-    pdf.ln(2)
-    setf(pdf, "", 12)
+    setf(pdf, "B", 18); mc(pdf, "Life Minus Work - Reflection Report", h=9)
+    setf(pdf, "", 12); mc(pdf, f"Hi {first_name or 'there'},")
 
-    # Archetype, Core Need, Signature Metaphor
-    setf(pdf, "B", 14); mc(pdf, ai.get("archetype", "Your Archetype"), h=7)
-    setf(pdf, "", 12); mc(pdf, ai.get("core_need", "Core Need..."))
-    pdf.ln(1)
-    setf(pdf, "I", 11); mc(pdf, ai.get("signature_metaphor", "Signature Metaphor..."))
-    pdf.ln(2)
-    setf(pdf, "B", 12); mc(pdf, ai.get("signature_sentence", "Signature Sentence..."))
-    pdf.ln(3)
+    # ===== Header identity block =====
+    section_break(pdf, "Archetype", "A simple lens for your pattern.")
+    mc(pdf, ai.get("archetype", "-"))
+    section_break(pdf, "Core Need", "The fuel that keeps your effort meaningful.")
+    mc(pdf, ai.get("core_need", "-"))
+    section_break(pdf, "Signature Metaphor", "A mental image to remember your mode.")
+    mc(pdf, ai.get("signature_metaphor", "-"))
+    section_break(pdf, "Signature Sentence", "One clean line to orient your week.")
+    mc(pdf, ai.get("signature_sentence", "-"))
 
+    # ===== Top / Snapshot =====
+    section_break(pdf, "Top Themes", "Where your energy is strongest right now.")
+    mc(pdf, ", ".join(top3) if top3 else "-")
     draw_scores_barchart(pdf, scores)
 
     # ===== From your words =====
     fyw = ai.get("from_your_words") or {}
-    if fyw.get("summary"):
+    if fyw.get("summary") or fyw.get("keepers"):
         section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
-        mc(pdf, fyw["summary"])
+        if fyw.get("summary"): mc(pdf, fyw["summary"])
+        if fyw.get("keepers"):
+            setf(pdf, "B", 12); mc(pdf, "Keepers")
+            setf(pdf, "", 11)
+            for k in fyw["keepers"]:
+                mc(pdf, f'* "{k}"')
 
     # ===== One-liners & Personal pledge =====
     if ai.get("one_liners_to_keep"):
@@ -476,28 +461,13 @@ def make_pdf_bytes(
 
     # ===== Page 2: Signature Week & Tiny Progress =====
     pdf.add_page()
+    section_break(pdf, "Signature Week - At a glance", "A simple plan you can print or screenshot.")
+    tiny = ai.get("tiny_progress", []) or ["Finish one rep", "Invite one person", "Take one 10m walk"]
+    setf(pdf, "", 12)
+    for t in tiny:
+        sc(pdf, 8, 8, "[ ]"); sc(pdf, 0, 8, t); pdf.ln(8)
 
-    # If AI provided a 1-week plan, use it; otherwise show a friendly default layout
-    plan = ai.get("plan_1_week") or [
-        "Day 1 (Mon): Review ideas list 10 min; pick one micro-adventure",
-        "Day 2 (Tue): Invite one person with a clear, low-effort plan",
-        "Day 3 (Wed): Prep a one-line purpose and a simple backup",
-        "Day 4 (Thu): Do the micro-adventure (2–4 hrs) or skill practice",
-        "Day 5 (Fri): Send a short thank-you or highlight",
-        "Day 6 (Sat): Reflect 5–10 min; one lesson + one joy",
-        "Day 7 (Sun): Rest; add two fresh ideas to the list",
-    ]
-    signature_week_block(pdf, plan)
-
-    pdf.ln(2)
-    tiny = ai.get("tiny_progress") or [
-        "Choose one small new activity + invite someone",
-        "Capture one lesson + one gratitude after the activity",
-        "Block a weekly 10-minute planning slot",
-    ]
-    tiny_progress_block(pdf, tiny)
-
-    pdf.ln(6)
+    pdf.ln(4)
     setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
     pdf.ln(6)
     setf(pdf, "", 9)
