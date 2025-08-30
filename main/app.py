@@ -1,23 +1,19 @@
 # app.py — Life Minus Work (rich report with Archetype, Core Need, Metaphor, etc.)
 from __future__ import annotations
-import os, json, re, hashlib, unicodedata, textwrap
+import os, json, re, hashlib, unicodedata, textwrap, datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-import time
 
 import streamlit as st
 from fpdf import FPDF
 from PIL import Image
-import requests
-from requests.exceptions import Timeout
 
 # ---------- Config ----------
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
-AI_MODEL = "gpt-4o-mini"  # Fallback to a known model due to gpt-5-mini issues
+AI_MODEL = "gpt-5-mini"
 AI_MAX_TOKENS_CAP = 7000
 AI_MAX_TOKENS_FALLBACK = 6000
-AI_TIMEOUT_SECONDS = 30  # Timeout for API calls
 
 FUTURE_WEEKS_MIN, FUTURE_WEEKS_MAX, FUTURE_WEEKS_DEFAULT = 2, 8, 4
 
@@ -178,13 +174,13 @@ def signature_week_block(pdf: FPDF, steps: list[str]):
                   "A simple plan you can print or screenshot. Check items off as you go.")
     setf(pdf, "", 12)
     for step in steps:
-        checkbox_line(pdf, step)
+        checkbox_line(pdf, step, line_height=10.0)
 
 def tiny_progress_block(pdf: FPDF, milestones: list[str]):
     section_break(pdf, "Tiny Progress Tracker", "Three tiny milestones you can celebrate this week.")
     setf(pdf, "", 12)
     for m in milestones:
-        checkbox_line(pdf, m)
+        checkbox_line(pdf, m, line_height=10.0)
 
 
 # ---------- Scoring ----------
@@ -300,7 +296,6 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
             messages=messages,
             max_completion_tokens=cap_tokens,
             response_format={"type": "json_object"},
-            timeout=AI_TIMEOUT_SECONDS,
         )
         raw = r.choices[0].message.content if r.choices else ""
         usage = getattr(r, "usage", None)
@@ -311,39 +306,28 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
                 "output": getattr(usage, "completion_tokens", None),
                 "total": getattr(usage, "total_tokens", None),
             }
-        try:
-            return json.loads(raw), usage_dict, raw[:800]
-        except json.JSONDecodeError:
-            st.warning("AI returned invalid JSON. Falling back.")
-    except (Timeout, Exception) as e:
-        st.warning(f"AI call failed: {str(e)}. Trying fallback model.")
+        return json.loads(raw), usage_dict, raw[:800]
+    except Exception:
+        pass
 
     # fallback mode
     model = FALLBACK_MODEL
-    try:
-        r = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_completion_tokens=AI_MAX_TOKENS_FALLBACK,
-            response_format={"type": "json_object"},
-            timeout=AI_TIMEOUT_SECONDS,
-        )
-        raw = r.choices[0].message.content if r.choices else ""
-        usage = getattr(r, "usage", None)
-        usage_dict = None
-        if usage is not None:
-            usage_dict = {
-                "input": getattr(usage, "prompt_tokens", None),
-                "output": getattr(usage, "completion_tokens", None),
-                "total": getattr(usage, "total_tokens", None),
-            }
-        try:
-            return json.loads(raw), usage_dict, raw[:800]
-        except json.JSONDecodeError:
-            st.warning("Fallback AI returned invalid JSON.")
-    except (Timeout, Exception) as e:
-        st.error(f"Fallback AI failed: {str(e)}. Using default template.")
-    return {}, None, ""
+    r = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_completion_tokens=AI_MAX_TOKENS_FALLBACK,
+        response_format={"type": "json_object"},
+    )
+    raw = r.choices[0].message.content if r.choices else ""
+    usage = getattr(r, "usage", None)
+    usage_dict = None
+    if usage is not None:
+        usage_dict = {
+            "input": getattr(usage, "prompt_tokens", None),
+            "output": getattr(usage, "completion_tokens", None),
+            "total": getattr(usage, "total_tokens", None),
+        }
+    return json.loads(raw), usage_dict, raw[:800]
 
 
 # ---------- PDF generator ----------
@@ -356,157 +340,153 @@ def make_pdf_bytes(
     horizon_weeks: int,
     logo_path: Optional[Path],
 ) -> bytes:
-    try:
-        pdf = PDF(orientation="P", unit="mm", format="A4")
-        pdf.set_margins(10, 10, 10)
-        pdf.add_page()
-        setf(pdf, "", 12)
+    pdf = PDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(10, 10, 10)
+    pdf.add_page()
+    setf(pdf, "", 12)
 
-        # Logo if available
-        if logo_path and logo_path.exists():
-            try:
-                with Image.open(logo_path) as img:
-                    img = img.convert("RGB")
-                    logo_temp = Path("/tmp/lmw_logo.png")
-                    img.save(logo_temp, "PNG")
-                    pdf.image(str(logo_temp), x=10, y=8, w=30)
-            except Exception as e:
-                st.warning(f"Failed to load logo: {str(e)}")
+    # Logo if available
+    if logo_path and logo_path.exists():
+        try:
+            with Image.open(logo_path) as img:
+                img = img.convert("RGB")
+                logo_temp = Path("/tmp/lmw_logo.png")
+                img.save(logo_temp, "PNG")
+                pdf.image(str(logo_temp), x=10, y=8, w=30)
+        except Exception:
+            pass
 
-        # Title and greeting
-        setf(pdf, "B", 20); mc(pdf, "Your Reflection Report", h=8)
-        setf(pdf, "", 12); mc(pdf, f"Hi {first_name or ''},", h=6)
-        ts = datetime.datetime.now().strftime("%d %b %Y")
-        mc(pdf, f"Date: {ts}", h=6)
-        mc(pdf, f"Email: {email or ''}", h=6)
-        pdf.ln(2)
+    # Title
+    setf(pdf, "B", 20); mc(pdf, "Your Reflection Report", h=8)
+    setf(pdf, "I", 11)
+    ts = datetime.datetime.now().strftime("%B %d, %Y")
+    mc(pdf, f"Generated for {first_name or 'you'} on {ts}")
+    pdf.ln(2)
+    setf(pdf, "", 12)
 
-        # Archetype, Core Need, Signature Metaphor
-        mc(pdf, "Archetype")
-        setf(pdf, "", 12); mc(pdf, ai.get("archetype", "Your Archetype"))
-        mc(pdf, "Core Need")
-        mc(pdf, ai.get("core_need", "Core Need..."))
-        pdf.ln(1)
-        mc(pdf, "Signature Metaphor")
-        mc(pdf, ai.get("signature_metaphor", "Signature Metaphor..."))
-        pdf.ln(2)
-        mc(pdf, "Signature Sentence")
-        mc(pdf, ai.get("signature_sentence", "Signature Sentence..."))
-        pdf.ln(3)
+    # Archetype, Core Need, Signature Metaphor
+    setf(pdf, "B", 14); mc(pdf, "Archetype")
+    setf(pdf, "", 12); mc(pdf, ai.get("archetype", "Your Archetype"))
+    setf(pdf, "B", 14); mc(pdf, "Core Need")
+    setf(pdf, "", 12); mc(pdf, ai.get("core_need", "Core Need..."))
+    pdf.ln(1)
+    setf(pdf, "B", 14); mc(pdf, "Signature Metaphor")
+    setf(pdf, "", 12); mc(pdf, ai.get("signature_metaphor", "Signature Metaphor..."))
+    pdf.ln(2)
+    setf(pdf, "B", 14); mc(pdf, "Signature Sentence")
+    setf(pdf, "", 12); mc(pdf, ai.get("signature_sentence", "Signature Sentence..."))
+    pdf.ln(3)
 
-        draw_scores_barchart(pdf, scores)
+    # Top Themes
+    setf(pdf, "B", 14); mc(pdf, "Top Themes")
+    setf(pdf, "", 12); mc(pdf, ", ".join(top3))
+    draw_scores_barchart(pdf, scores)
 
-        # ===== From your words =====
-        fyw = ai.get("from_your_words") or {}
-        if fyw.get("summary"):
-            section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
-            mc(pdf, fyw["summary"])
-        if fyw.get("bullets"):
-            bullet_list(pdf, fyw["bullets"])
+    # ===== From your words =====
+    fyw = ai.get("from_your_words") or {}
+    if fyw.get("summary"):
+        section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
+        mc(pdf, fyw["summary"])
 
-        # ===== Personal pledge =====
-        if ai.get("personal_pledge"):
-            section_break(pdf, "Personal pledge", "Your simple promise to yourself.")
-            mc(pdf, ai["personal_pledge"])
+    # ===== One-liners to keep =====
+    if ai.get("one_liners_to_keep"):
+        section_break(pdf, "One-liners to keep", "Tiny reminders that punch above their weight.")
+        bullet_list(pdf, ai["one_liners_to_keep"])
 
-        # ===== What this really says about you =====
-        if ai.get("what_this_really_says"):
-            section_break(pdf, "What this really says about you", "A kind, honest read of your pattern.")
-            mc(pdf, ai["what_this_really_says"])
+    # ===== Personal pledge =====
+    if ai.get("personal_pledge"):
+        section_break(pdf, "Personal pledge", "Your simple promise to yourself.")
+        mc(pdf, ai["personal_pledge"])
 
-        # ===== Why this matters now =====
-        if ai.get("why_now"):
-            section_break(pdf, "Why this matters now", "Why these themes may be active in this season.")
-            mc(pdf, ai["why_now"])
+    # ===== What this really says about you =====
+    if ai.get("what_this_really_says"):
+        section_break(pdf, "What this really says about you", "A kind, honest read of your pattern.")
+        mc(pdf, ai["what_this_really_says"])
 
-        # ===== Future Snapshot =====
-        if ai.get("future_snapshot"):
-            section_break(pdf, f"Future Snapshot - {horizon_weeks} weeks", "A short postcard from ahead.")
-            mc(pdf, ai["future_snapshot"])
+    # ===== Why Now =====
+    if ai.get("why_now"):
+        section_break(pdf, "Why Now", "Why these themes may be active in this season.")
+        mc(pdf, ai["why_now"])
 
-        # ===== Signature strengths =====
-        if ai.get("signature_strengths"):
-            section_break(pdf, "Signature strengths", "Traits to lean on when momentum matters.")
-            bullet_list(pdf, ai["signature_strengths"])
+    # ===== Future Snapshot =====
+    if ai.get("future_snapshot"):
+        section_break(pdf, f"Your Future Snapshot ({horizon_weeks} weeks from now)", "A short postcard from ahead.")
+        mc(pdf, ai["future_snapshot"])
 
-        # ===== Energy Map =====
-        em = ai.get("energy_map", {}) or {}
-        if em.get("energizers") or em.get("drainers"):
-            section_break(pdf, "Energy Map", "Name what fuels you, and what quietly drains you.")
-            two_cols_lists(pdf, "Energizers", em.get("energizers", []), "Drainers", em.get("drainers", []))
+    # ===== Signature strengths =====
+    if ai.get("signature_strengths"):
+        section_break(pdf, "Signature Strengths", "Traits to lean on when momentum matters.")
+        bullet_list(pdf, ai["signature_strengths"])
 
-        # ===== Hidden Tensions =====
-        if ai.get("hidden_tensions"):
-            section_break(pdf, "Hidden Tensions", "Small frictions to watch with kindness.")
-            bullet_list(pdf, ai["hidden_tensions"])
+    # ===== Energy Map =====
+    em = ai.get("energy_map", {}) or {}
+    if em.get("energizers") or em.get("drainers"):
+        section_break(pdf, "Energy Map", "Name what fuels you, and what quietly drains you.")
+        two_cols_lists(pdf, "Energizers", em.get("energizers", []), "Drainers", em.get("drainers", []))
 
-        # ===== Watch-out =====
-        if ai.get("watch_out"):
-            section_break(pdf, "Watch-out (gentle blind spot)", "A nudge to keep you steady.")
-            mc(pdf, ai["watch_out"])
+    # ===== Hidden Tensions =====
+    if ai.get("hidden_tensions"):
+        section_break(pdf, "Hidden Tensions", "Small frictions to watch with kindness.")
+        bullet_list(pdf, ai["hidden_tensions"])
 
-        # ===== 3 Next-step Actions (7 days) =====
-        if ai.get("actions_7d"):
-            section_break(pdf, "3 Next-step Actions (7 days)", "Tiny moves that compound quickly.")
-            bullet_list(pdf, ai["actions_7d"])
+    # ===== Watch-out (gentle blind spot) =====
+    if ai.get("watch_out"):
+        section_break(pdf, "Watch-out (gentle blind spot)", "A nudge to keep you steady.")
+        mc(pdf, ai["watch_out"])
 
-        # ===== Implementation Intentions (If-Then) =====
-        if ai.get("impl_if_then"):
-            section_break(pdf, "Implementation Intentions (If-Then)", "Pre-decide responses to common bumps.")
-            bullet_list(pdf, ai["impl_if_then"])
+    # ===== 3 Next-step Actions (7 days) =====
+    if ai.get("actions_7d"):
+        section_break(pdf, "3 Next-step Actions (7 days)", "Tiny moves that compound quickly.")
+        bullet_list(pdf, ai["actions_7d"])
 
-        # ===== 1-Week Gentle Plan =====
-        if ai.get("plan_1_week"):
-            section_break(pdf, "1-Week Gentle Plan", "A light structure you can actually follow.")
-            bullet_list(pdf, ai["plan_1_week"])
+    # ===== Implementation Intentions (If-Then) =====
+    if ai.get("impl_if_then"):
+        section_break(pdf, "Implementation Intentions (If-Then)", "Pre-decide responses to common bumps.")
+        bullet_list(pdf, ai["impl_if_then"])
 
-        # ===== Balancing Opportunity =====
-        if ai.get("balancing_opportunity"):
-            section_break(pdf, "Balancing Opportunity", "Low themes to tenderly rebalance.")
-            bullet_list(pdf, ai["balancing_opportunity"])
+    # ===== 1-Week Gentle Plan =====
+    if ai.get("plan_1_week"):
+        section_break(pdf, "1-Week Gentle Plan", "A light structure you can actually follow.")
+        bullet_list(pdf, ai["plan_1_week"])
 
-        pdf.ln(4)
-        setf(pdf, "B", 12); mc(pdf, "Next Page: Printable 'Signature Week – At a glance' + Tiny Progress Tracker")
-        setf(pdf, "", 11); mc(pdf, "Tip: Put this on your fridge, desk, or phone notes.")
+    # ===== Balancing Opportunity =====
+    if ai.get("balancing_opportunity"):
+        section_break(pdf, "Balancing Opportunity", "Low themes to tenderly rebalance.")
+        bullet_list(pdf, ai["balancing_opportunity"])
 
-        # ===== Page 2: Signature Week & Tiny Progress =====
-        pdf.add_page()
-        signature_week_block(pdf, ai.get("plan_1_week") or [
-            "Day 1: Review ideas 10 min, pick adventure",
-            "Day 2: Invite one person with clear plan",
-            "Day 3: Prep a purpose and backup",
-            "Day 4: Do adventure or skill practice",
-            "Day 5: Send a thank-you or highlight",
-            "Day 6: Reflect 5-10 min, note joy",
-            "Day 7: Rest, add two new ideas",
-        ])
-        pdf.ln(10)  # Add roomy spacing
-        tiny_progress_block(pdf, ai.get("tiny_progress") or [
-            "Choose a new activity and invite",
-            "Note one lesson and gratitude",
-            "Plan a 10-min weekly slot",
-        ])
-        pdf.ln(10)  # Add roomy spacing
+    # ===== Page 2: Signature Week & Tiny Progress =====
+    pdf.add_page()
 
-        pdf.ln(6)
-        setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
-        pdf.ln(6)
-        setf(pdf, "", 9)
-        mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
+    # If AI provided a 1-week plan, use it; otherwise show a friendly default layout
+    plan = ai.get("plan_1_week") or [
+        "Day 1 (Mon): Review ideas list 10 min; pick one micro-adventure",
+        "Day 2 (Tue): Invite one person with a clear, low-effort plan",
+        "Day 3 (Wed): Prep a one-line purpose and a simple backup",
+        "Day 4 (Thu): Do the micro-adventure (2–4 hrs) or skill practice",
+        "Day 5 (Fri): Send a short thank-you or highlight",
+        "Day 6 (Sat): Reflect 5–10 min; one lesson + one joy",
+        "Day 7 (Sun): Rest; add two fresh ideas to the list",
+    ]
+    signature_week_block(pdf, plan)
 
-        out = pdf.output(dest="S")
-        if isinstance(out, str):
-            out = out.encode("latin-1", errors="ignore")
-        return out
-    except Exception as e:
-        st.error(f"PDF generation failed: {str(e)}. Check inputs or AI output.")
-        pdf = PDF(orientation="P", unit="mm", format="A4")
-        pdf.add_page()
-        pdf.set_margins(10, 10, 10)
-        setf(pdf, "", 12)
-        mc(pdf, "Error generating report. Try shorter inputs.")
-        out = pdf.output(dest="S")
-        return out if isinstance(out, bytes) else out.encode("latin-1", errors="ignore")
+    pdf.ln(2)
+    tiny = ai.get("tiny_progress") or [
+        "Choose one small new activity + invite someone",
+        "Capture one lesson + one gratitude after the activity",
+        "Block a weekly 10-minute planning slot",
+    ]
+    tiny_progress_block(pdf, tiny)
+
+    pdf.ln(6)
+    setf(pdf, "", 10); mc(pdf, f"Requested for: {email or '-'}")
+    pdf.ln(6)
+    setf(pdf, "", 9)
+    mc(pdf, "Life Minus Work * This report is a starting point for reflection. Nothing here is medical or financial advice.")
+
+    out = pdf.output(dest="S")
+    if isinstance(out, str):
+        out = out.encode("latin-1", errors="ignore")
+    return out
 
 
 # ---------- App UI ----------
