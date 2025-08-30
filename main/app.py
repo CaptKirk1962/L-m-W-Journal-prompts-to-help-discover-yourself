@@ -1,9 +1,6 @@
 # app.py — Life Minus Work (Streamlit)
-# Notes:
-# - Fixes UnicodeEncodeError in FPDF by sanitizing to Latin-1 for ALL PDF text
-# - Uses ASCII-safe characters in PDF (bars '#', checkbox '[ ]', hyphens '-')
-# - Keeps your email-gated flow with st.rerun() after 'sent' and 'verified'
-# - Enriched Mini Report preview remains
+# Spinner-hardening: removed border=True on container; wrapped PDF build in try/except.
+# Unicode-safe PDF (Latin-1 sanitizer). Email gate shows code immediately; full report unlocks after verify.
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, textwrap, time, ssl, smtplib
@@ -121,8 +118,7 @@ LATIN1_MAP = {
     "•": "-", "·": "-", "∙": "-",
     "…": "...",
     "□": "[ ]", "✓": "v", "✔": "v", "✗": "x", "✘": "x",
-    "•": "-", "★": "*", "☆": "*",
-    "█": "#", "■": "#", "▪": "-",
+    "★": "*", "☆": "*", "█": "#", "■": "#", "▪": "-",
     "\u00a0": " ", "\u200b": "",
 }
 
@@ -136,7 +132,7 @@ def to_latin1(text: str) -> str:
         t = t.encode("latin-1", errors="ignore").decode("latin-1")
     except Exception:
         t = t.encode("ascii", errors="ignore").decode("ascii")
-    t = re.sub(r"(\S{80})\S+", r"\1", t)  # avoid very long unbreakable tokens
+    t = re.sub(r"(\S{80})\S+", r"\1", t)
     return t
 
 def mc(pdf: "PDF", text: str, h=6):
@@ -155,7 +151,6 @@ def section_break(pdf: "PDF", title: str, subtitle: str = ""):
     pdf.ln(2)
 
 def draw_scores_barchart(pdf: "PDF", scores: Dict[str, int]):
-    # ASCII bars to be Latin-1 safe
     setf(pdf, "", 11)
     for k, v in scores.items():
         bar = "#" * max(1, int(v)) if v > 0 else ""
@@ -214,10 +209,6 @@ def ai_enabled() -> bool:
     return (not SAFE_MODE) and bool(os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))) and OPENAI_OK
 
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
-    """
-    Returns (ai_sections_dict, usage, raw_text_head)
-    In Safe Mode, returns a deterministic fallback payload (no network).
-    """
     usage = {}
     raw_text = ""
 
@@ -257,7 +248,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
 
     try:
         client = OpenAI()
-        # (Real call would go here.) Returning same structure for now.
+        # Replace this stub with real model call when LW_SAFE_MODE="0"
         data = {
             "archetype": "Curious Connector",
             "core_need": "Growth with people",
@@ -323,7 +314,6 @@ def send_email(to_addr: str, subject: str, text_body: str, html_body: str | None
         server.send_message(msg)
 
 def generate_code() -> str:
-    # 000000–999999, always 6 digits
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
 
 # -----------------------------
@@ -385,7 +375,7 @@ def make_pdf_bytes(
             mc(pdf, f"- {a}")
 
     if ai.get("impl_if_then"):
-        section_break(pdf, "If-Then plan")  # ASCII hyphen
+        section_break(pdf, "If-Then plan")
         for a in ai["impl_if_then"]:
             mc(pdf, f"- {a}")
 
@@ -408,7 +398,7 @@ def make_pdf_bytes(
         "Block a weekly 10-minute planning slot",
     ]
     for t in tiny:
-        mc(pdf, f"[ ] {t}")  # ASCII checkbox
+        mc(pdf, f"[ ] {t}")
 
     pdf.ln(6)
     setf(pdf, "", 10)
@@ -483,7 +473,7 @@ if st.session_state.get("preview_ready"):
     # Compute preview data
     scores = compute_scores(questions, st.session_state["answers_by_qid"])
     top3 = top_n_themes(scores, 3)
-    with st.container(border=True):
+    with st.container():  # removed border=True for compatibility
         st.subheader("Your Mini Report (Preview)")
         st.write(f"**Top themes:** {', '.join(top3) if top3 else '-'}")
 
@@ -624,7 +614,6 @@ if st.session_state.get("preview_ready"):
     elif st.session_state.verify_state == "verified":
         st.success("Your email is verified.")
 
-        # Build full report (AI only runs now, and only if Safe Mode off)
         scores = compute_scores(questions, st.session_state["answers_by_qid"])
         top3 = top_n_themes(scores, 3)
         free_responses = {qid: txt for qid, txt in (st.session_state.get("free_by_qid") or {}).items() if txt and txt.strip()}
@@ -636,38 +625,45 @@ if st.session_state.get("preview_ready"):
             scores_free=free_responses,
         )
 
-        pdf_bytes = make_pdf_bytes(
-            first_name=st.session_state.get("first_name_input", first_name),
-            email=st.session_state.pending_email,
-            scores=scores,
-            top3=top3,
-            ai=ai_sections,
-            horizon_weeks=horizon_weeks,
-            logo_path=here_logo() if here_logo().exists() else None,
-        )
+        # Build the PDF safely; show errors instead of hanging spinner
+        pdf_bytes = b""
+        try:
+            pdf_bytes = make_pdf_bytes(
+                first_name=st.session_state.get("first_name_input", first_name),
+                email=st.session_state.pending_email,
+                scores=scores,
+                top3=top3,
+                ai=ai_sections,
+                horizon_weeks=horizon_weeks,
+                logo_path=here_logo() if here_logo().exists() else None,
+            )
+        except Exception as e:
+            st.error("We hit an issue while building the PDF.")
+            st.exception(e)
 
         st.subheader("Your Complete Reflection Report")
         st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
-        st.download_button(
-            "Download PDF",
-            data=pdf_bytes,
-            file_name="LifeMinusWork_Reflection_Report.pdf",
-            mime="application/pdf",
-        )
+        if pdf_bytes:
+            st.download_button(
+                "Download PDF",
+                data=pdf_bytes,
+                file_name="LifeMinusWork_Reflection_Report.pdf",
+                mime="application/pdf",
+            )
 
-        with st.expander("Email me the PDF", expanded=False):
-            if st.button("Send report to my email"):
-                try:
-                    send_email(
-                        to_addr=st.session_state.pending_email,
-                        subject="Your Life Minus Work — Reflection Report",
-                        text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
-                        html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
-                        attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
-                    )
-                    st.success("We’ve emailed your report.")
-                except Exception as e:
-                    st.error(f"Could not email the PDF. {e}")
+            with st.expander("Email me the PDF", expanded=False):
+                if st.button("Send report to my email"):
+                    try:
+                        send_email(
+                            to_addr=st.session_state.pending_email,
+                            subject="Your Life Minus Work — Reflection Report",
+                            text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
+                            html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
+                            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
+                        )
+                        st.success("We’ve emailed your report.")
+                    except Exception as e:
+                        st.error(f"Could not email the PDF. {e}")
 
         with st.expander("AI status (debug)", expanded=False):
             st.write(f"AI enabled: {ai_enabled()}")
