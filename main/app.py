@@ -396,6 +396,81 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         notes=json.dumps(scores_free or {}, ensure_ascii=False),
     )
 
+    # GPT-5 mini only; two passes with 7000 then 6000 completion tokens.
+    model = AI_MODEL  # "gpt-5-mini"
+    attempts: List[Tuple[str, str]] = []
+    for max_out in (AI_MAX_TOKENS_CAP, AI_MAX_TOKENS_FALLBACK):
+        try:
+            kwargs = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                # IMPORTANT: GPT-5 mini expects max_completion_tokens; don't send temperature.
+                "max_completion_tokens": int(max_out),
+            }
+            st.session_state["param_used"] = "max_completion_tokens"
+            resp = client.chat.completions.create(**kwargs)
+
+            txt = (resp.choices[0].message.content or "").strip()
+            blob = _extract_json_blob(txt)
+            data = json.loads(blob)
+
+            usage_obj = getattr(resp, "usage", None)
+            if usage_obj:
+                inp = getattr(usage_obj, "prompt_tokens", None)
+                out = getattr(usage_obj, "completion_tokens", None) or getattr(usage_obj, "output_tokens", None)
+                tot = getattr(usage_obj, "total_tokens", None)
+                usage = {
+                    "input": inp or 0,
+                    "output": out or 0,
+                    "total": tot or ((inp or 0) + (out or 0)),
+                }
+
+            if "top_themes" not in data or not isinstance(data["top_themes"], list):
+                data["top_themes"] = [k for k, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+            for key in ["future_snapshot", "insights", "why_now", "what_this_really_says"]:
+                if key not in data:
+                    raise ValueError("Missing key: " + key)
+
+            st.session_state["effective_model"] = model
+            attempts.append((f"{model} @ {max_out}", "ok"))
+            st.session_state["model_attempts"] = attempts
+            return (data, usage, txt[:800])
+        except Exception as e:
+            attempts.append((f"{model} @ {max_out}", f"error: {e}"))
+            continue
+
+    st.warning("AI call fell back to safe content.")
+    st.session_state["effective_model"] = "(fallback)"
+    st.session_state["model_attempts"] = attempts
+    return _fallback_ai(scores), usage, raw_text
+
+    system_msg = (
+        "You are a precise reflection coach.\n"
+        f"Return ONLY a compact JSON object with fields {AI_SCHEMA_FIELDS}.\n"
+        "Depth requirements:\n"
+        "- Write substantial, concrete content (no fluff).\n"
+        "- 'insights' and 'why_now': 2–3 dense paragraphs each (5–8 sentences per paragraph).\n"
+        "- 'future_snapshot': 8–12 vivid sentences as a short postcard from ~1 month ahead.\n"
+        "- Lists (actions_7d, impl_if_then, plan_1_week, strengths, energizers/drainers): 6–10 items each, specific and actionable.\n"
+        "- All list fields MUST be JSON arrays of short strings (never a paragraph).\n"
+        "- Keep language simple, humane, and encouraging.\n"
+    )
+    user_msg = (
+        "Name: {name}\n"
+        "Horizon: about {weeks} weeks (~1 month)\n"
+        "Theme scores (higher = stronger energy): {scores}\n"
+        "From user's notes (optional): {notes}\n"
+        "Top themes should reflect the score order. Fill every field with specific, helpful content."
+    ).format(
+        name=first_name or "friend",
+        weeks=horizon_weeks,
+        scores=json.dumps(scores),
+        notes=json.dumps(scores_free or {}, ensure_ascii=False),
+    )
+
     model = AI_MODEL  # gpt-5-mini
     attempts: List[Tuple[str, str]] = []
     for max_out in (AI_MAX_TOKENS_CAP, AI_MAX_TOKENS_FALLBACK):
