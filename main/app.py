@@ -1,6 +1,10 @@
 # app.py — Life Minus Work (Streamlit)
-# Spinner-safe, AI-enabled, email-gated full report, improved PDF aesthetics, Latin-1-safe.
-# CHANGE: render full report immediately after Verify (no st.rerun), without jumping to top.
+# Fixes:
+# - Stable report generation: generate once per answers; reuse via session cache
+# - OpenAI usage parsing compatible with 'CompletionUsage' objects (no .get)
+# - Verified renders full report immediately (no jump-to-top, no second run needed)
+# - Inline progress while generating (no time promises)
+# - Prior features kept: mini report, email code gate, improved PDF, Latin-1 safety, lazy OpenAI import
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, time, ssl, smtplib
@@ -19,7 +23,6 @@ from PIL import Image
 
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
-# Model & tokens
 AI_MODEL = os.getenv("LW_MODEL", st.secrets.get("LW_MODEL", "gpt-4o-mini"))
 AI_MAX_TOKENS_CAP = 8000
 AI_MAX_TOKENS_FALLBACK = 7000
@@ -248,6 +251,9 @@ def _extract_json_blob(txt: str) -> str:
         return "{}"
 
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
+    """
+    Returns (ai_sections_dict, usage_dict, raw_text_head)
+    """
     usage = {}
     prompt_ctx = {
         "first_name": first_name or "",
@@ -320,11 +326,20 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         txt = (resp.choices[0].message.content or "").strip()
         blob = _extract_json_blob(txt)
         data = json.loads(blob)
-        usage = {
-            "input": getattr(resp, "usage", {}).get("prompt_tokens", 0) if hasattr(resp, "usage") else 0,
-            "output": getattr(resp, "usage", {}).get("completion_tokens", 0) if hasattr(resp, "usage") else 0,
-            "total": getattr(resp, "usage", {}).get("total_tokens", 0) if hasattr(resp, "usage") else 0,
-        }
+
+        # ---- FIX: usage is an object in SDK 1.x (not a dict)
+        usage_obj = getattr(resp, "usage", None)
+        if usage_obj:
+            try:
+                usage = {
+                    "input": getattr(usage_obj, "prompt_tokens", 0) or 0,
+                    "output": getattr(usage_obj, "completion_tokens", 0) or 0,
+                    "total": getattr(usage_obj, "total_tokens", 0) or 0,
+                }
+            except Exception:
+                usage = {}
+        # ----
+
         if not isinstance(data, dict) or "future_snapshot" not in data:
             raise ValueError("Model did not return expected JSON keys.")
         return (data, usage, txt[:800])
@@ -369,6 +384,9 @@ def generate_code() -> str:
 # PDF Builder (improved look)
 # -----------------------------
 
+class PDFDoc(PDF):  # alias in case FPDF customization expands later
+    pass
+
 def make_pdf_bytes(
     first_name: str,
     email: str,
@@ -378,7 +396,7 @@ def make_pdf_bytes(
     horizon_weeks: int,
     logo_path: Optional[Path] = None
 ) -> bytes:
-    pdf = PDF()
+    pdf = PDFDoc()
     pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_page()
 
@@ -609,9 +627,6 @@ if st.session_state.get("preview_ready"):
     st.subheader("Unlock your complete Reflection Report")
     st.write("We’ll email a 6-digit code to verify it’s really you. No spam—ever.")
 
-    # Track if we rendered the full report already in this run
-    full_rendered = False
-
     # Step A: Collect email & send code
     if st.session_state.verify_state == "collect":
         user_email = st.text_input("Your email", placeholder="you@example.com", key="gate_email")
@@ -672,7 +687,7 @@ if st.session_state.get("preview_ready"):
             elif v.strip() == st.session_state.pending_code:
                 st.success("Verified! Your full report is unlocked.")
                 st.session_state.verify_state = "verified"
-                # NOTE: no st.rerun(); we render the full report immediately below
+                # no st.rerun(); we’ll render below immediately
             else:
                 st.error("That code didn’t match. Please try again.")
         if resend:
@@ -697,37 +712,65 @@ if st.session_state.get("preview_ready"):
                     else:
                         st.error(f"Couldn’t resend the code. {e}")
 
-    # Step C: Verified → build full report, download & email PDF
-    elif st.session_state.verify_state == "verified":
-        st.success("Your email is verified.")
-        scores = compute_scores(questions, st.session_state["answers_by_qid"])
-        top3 = top_n_themes(scores, 3)
-        free_responses = {qid: txt for qid, txt in (st.session_state.get("free_by_qid") or {}).items() if txt and txt.strip()}
+    # ---- Always check after the form: if verified, ensure report is generated once & rendered ----
+    if st.session_state.verify_state == "verified":
+        # Build a stable key from inputs so we only generate once per set
+        answers_by_qid = st.session_state.get("answers_by_qid", {})
+        free_by_qid = st.session_state.get("free_by_qid", {})
+        key_payload = {
+            "email": st.session_state.pending_email,
+            "first_name": st.session_state.get("first_name_input", ""),
+            "answers": answers_by_qid,
+            "free": free_by_qid,
+            "model": AI_MODEL,
+            "horizon_weeks": horizon_weeks,
+        }
+        report_key = hashlib.sha256(json.dumps(key_payload, sort_keys=True).encode("utf-8")).hexdigest()
 
-        ai_sections, usage, raw_head = run_ai(
-            first_name=st.session_state.get("first_name_input", first_name),
-            horizon_weeks=horizon_weeks,
-            scores=scores,
-            scores_free=free_responses,
+        need_build = (
+            st.session_state.get("report_key") != report_key
+            or st.session_state.get("pdf_bytes") is None
+            or st.session_state.get("ai_sections") is None
         )
 
-        pdf_bytes = b""
-        try:
-            pdf_bytes = make_pdf_bytes(
-                first_name=st.session_state.get("first_name_input", first_name),
-                email=st.session_state.pending_email,
-                scores=scores,
-                top3=top3,
-                ai=ai_sections,
-                horizon_weeks=horizon_weeks,
-                logo_path=(here() / "logo.png") if (here() / "logo.png").exists() else None,
-            )
-        except Exception as e:
-            st.error("We hit an issue while building the PDF.")
-            st.exception(e)
+        if need_build:
+            with st.status("Generating your report…", expanded=False) as s:
+                scores_build = compute_scores(questions, answers_by_qid)
+                top3_build = top_n_themes(scores_build, 3)
+                free_responses = {qid: txt for qid, txt in (free_by_qid or {}).items() if txt and txt.strip()}
 
+                ai_sections, usage, raw_head = run_ai(
+                    first_name=st.session_state.get("first_name_input", ""),
+                    horizon_weeks=horizon_weeks,
+                    scores=scores_build,
+                    scores_free=free_responses,
+                )
+                s.update(label="Building PDF…")
+                pdf_bytes = make_pdf_bytes(
+                    first_name=st.session_state.get("first_name_input", ""),
+                    email=st.session_state.pending_email,
+                    scores=scores_build,
+                    top3=top3_build,
+                    ai=ai_sections,
+                    horizon_weeks=horizon_weeks,
+                    logo_path=(here() / "logo.png") if (here() / "logo.png").exists() else None,
+                )
+
+                st.session_state["report_key"] = report_key
+                st.session_state["pdf_bytes"] = pdf_bytes
+                st.session_state["ai_sections"] = ai_sections
+                st.session_state["scores_final"] = scores_build
+                st.session_state["top3_final"] = top3_build
+                st.session_state["ai_usage"] = usage
+                st.session_state["raw_head"] = raw_head
+                s.update(label="Report ready.", state="complete")
+
+        # Render from cache
+        st.success("Your email is verified.")
         st.subheader("Your Complete Reflection Report")
         st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
+
+        pdf_bytes = st.session_state.get("pdf_bytes", b"")
         if pdf_bytes:
             st.download_button(
                 "Download PDF",
@@ -754,73 +797,9 @@ if st.session_state.get("preview_ready"):
             st.write(f"AI enabled: {ai_enabled()}")
             st.write(f"Model: {AI_MODEL}")
             st.write(f"Max tokens: {AI_MAX_TOKENS_CAP} (fallback {AI_MAX_TOKENS_FALLBACK})")
+            usage = st.session_state.get("ai_usage") or {}
             if usage:
                 st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
             else:
-                st.write("No usage returned (fallback).")
-            st.text("Raw head (first 800 chars)"); st.code(raw_head or "(empty)")
-        full_rendered = True  # mark rendered
-
-    # --- Render full report immediately if we just moved to 'verified' in this same run ---
-    if st.session_state.verify_state == "verified" and not full_rendered:
-        # This is the same block as above, duplicated intentionally so the UI updates without st.rerun()
-        st.success("Your email is verified.")
-        scores = compute_scores(questions, st.session_state["answers_by_qid"])
-        top3 = top_n_themes(scores, 3)
-        free_responses = {qid: txt for qid, txt in (st.session_state.get("free_by_qid") or {}).items() if txt and txt.strip()}
-
-        ai_sections, usage, raw_head = run_ai(
-            first_name=st.session_state.get("first_name_input", first_name),
-            horizon_weeks=horizon_weeks,
-            scores=scores,
-            scores_free=free_responses,
-        )
-
-        pdf_bytes = b""
-        try:
-            pdf_bytes = make_pdf_bytes(
-                first_name=st.session_state.get("first_name_input", first_name),
-                email=st.session_state.pending_email,
-                scores=scores,
-                top3=top3,
-                ai=ai_sections,
-                horizon_weeks=horizon_weeks,
-                logo_path=(here() / "logo.png") if (here() / "logo.png").exists() else None,
-            )
-        except Exception as e:
-            st.error("We hit an issue while building the PDF.")
-            st.exception(e)
-
-        st.subheader("Your Complete Reflection Report")
-        st.write("Includes your postcard from **1 month ahead**, insights, plan & printable checklist.")
-        if pdf_bytes:
-            st.download_button(
-                "Download PDF",
-                data=pdf_bytes,
-                file_name="LifeMinusWork_Reflection_Report.pdf",
-                mime="application/pdf",
-            )
-
-            with st.expander("Email me the PDF", expanded=False):
-                if st.button("Send report to my email"):
-                    try:
-                        send_email(
-                            to_addr=st.session_state.pending_email,
-                            subject="Your Life Minus Work — Reflection Report",
-                            text_body="Your report is attached. Be kind to your future self. —Life Minus Work",
-                            html_body="<p>Your report is attached. Be kind to your future self.<br>—Life Minus Work</p>",
-                            attachments=[("LifeMinusWork_Reflection_Report.pdf", pdf_bytes, "application/pdf")],
-                        )
-                        st.success("We’ve emailed your report.")
-                    except Exception as e:
-                        st.error(f"Could not email the PDF. {e}")
-
-        with st.expander("AI status (debug)", expanded=False):
-            st.write(f"AI enabled: {ai_enabled()}")
-            st.write(f"Model: {AI_MODEL}")
-            st.write(f"Max tokens: {AI_MAX_TOKENS_CAP} (fallback {AI_MAX_TOKENS_FALLBACK})")
-            if usage:
-                st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
-            else:
-                st.write("No usage returned (fallback).")
-            st.text("Raw head (first 800 chars)"); st.code(raw_head or "(empty)")
+                st.write("No usage returned (fallback or SDK omitted usage fields).")
+            st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
