@@ -1,9 +1,8 @@
 # app.py — Life Minus Work (Streamlit)
-# - Email verify gate with st.rerun() after "sent" and "verified"
-# - Mini Report enhanced (scores bar chart, tailored actions, from-your-words, 7-day micro-plan, unlock list)
-# - Full PDF improved aesthetics: vector bars, drawn checkboxes, separators, consistent spacing
-# - Latin-1 sanitizer for FPDF 1.x; no Unicode punctuation in PDF
-# - Future Snapshot fixed to "1 month ahead" (internally 4 weeks)
+# - AI now ON by default when OPENAI_API_KEY is present (fallback if missing)
+# - Removed the "Future Snapshot" text block from the quiz page (per request)
+# - Avoid extra jump to top by removing explicit st.rerun() on Verify success
+# - Mini Report enhanced; PDF uses vector bars & drawn checkboxes; Latin-1 safe
 
 from __future__ import annotations
 import os, json, re, hashlib, unicodedata, textwrap, time, ssl, smtplib
@@ -22,15 +21,16 @@ from PIL import Image
 
 THEMES = ["Identity", "Growth", "Connection", "Peace", "Adventure", "Contribution"]
 
-AI_MODEL = "gpt-5-mini"
+# Use a safe, widely-available model automatically if AI_MODEL isn't valid
+AI_MODEL = os.getenv("LW_MODEL", st.secrets.get("LW_MODEL", "gpt-4o-mini"))
 AI_MAX_TOKENS_CAP = 8000
 AI_MAX_TOKENS_FALLBACK = 7000
 
 # Future Snapshot horizon: fixed internally; wording everywhere is "1 month ahead"
 FUTURE_WEEKS_DEFAULT = 4
 
-# Safe Mode (default ON) disables AI calls to avoid cloud spinner if networking is blocked
-SAFE_MODE = os.getenv("LW_SAFE_MODE", st.secrets.get("LW_SAFE_MODE", "1")) == "1"
+# Safe Mode (now defaults to OFF so AI is ON when a key is present)
+SAFE_MODE = os.getenv("LW_SAFE_MODE", st.secrets.get("LW_SAFE_MODE", "0")) == "1"
 
 # Email / SMTP (Gmail App Password)
 GMAIL_USER = st.secrets.get("GMAIL_USER", "whatisyourminus@gmail.com")
@@ -255,19 +255,31 @@ def ensure_state(questions: List[dict]):
 # -----------------------------
 
 def ai_enabled() -> bool:
-    return (not SAFE_MODE) and bool(os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))) and OPENAI_OK
+    key = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
+    return (not SAFE_MODE) and bool(key) and OPENAI_OK
+
+def _extract_json_blob(txt: str) -> str:
+    """Extract first JSON object from text."""
+    try:
+        start = txt.index("{")
+        end = txt.rindex("}")
+        return txt[start:end+1]
+    except Exception:
+        return "{}"
 
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
+    """
+    Returns (ai_sections_dict, usage, raw_text_head)
+    In Safe Mode or on any failure, returns a deterministic fallback payload (no network).
+    """
     usage = {}
-    raw_text = ""
-
-    prompt = {
+    prompt_ctx = {
         "first_name": first_name or "",
         "horizon_weeks": horizon_weeks,
         "scores": scores,
         "free": scores_free or {},
     }
-    raw_text = json.dumps(prompt)[:800]
+    raw_text = json.dumps(prompt_ctx)[:800]
 
     if not ai_enabled():
         data = {
@@ -295,9 +307,58 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         }
         return (data, usage, raw_text[:800])
 
+    # Real OpenAI call with structured JSON output
     try:
         client = OpenAI()
-        # Replace this stub with real model call when LW_SAFE_MODE="0"
+        system_msg = (
+            "You are a concise reflection coach. "
+            "Return ONLY a compact JSON object with fields: "
+            "{archetype, core_need, signature_metaphor, signature_sentence, deep_insight, why_now, "
+            "future_snapshot, from_your_words:{summary, keepers:[]}, one_liners_to_keep:[], personal_pledge, "
+            "what_this_really_says, signature_strengths:[], energy_map:{energizers:[], drainers:[]}, "
+            "hidden_tensions:[], watch_out, actions_7d:[], impl_if_then:[], plan_1_week:[], "
+            "balancing_opportunity:[], keep_in_view:[], tiny_progress:[]}. "
+            "Keep it specific and concrete. Do not include markdown."
+        )
+        user_msg = (
+            "Name: {name}\n"
+            "Horizon: about {weeks} weeks (~1 month)\n"
+            "Theme scores (higher means stronger energy): {scores}\n"
+            "From user's notes (optional): {notes}\n"
+            "Write the JSON described above, filling each field with helpful, specific content. "
+            "Make 'future_snapshot' a short postcard from 1 month ahead."
+        ).format(
+            name=first_name or "friend",
+            weeks=horizon_weeks,
+            scores=json.dumps(scores),
+            notes=json.dumps(scores_free or {}, ensure_ascii=False)
+        )
+
+        # Prefer chat.completions for broad compatibility
+        resp = client.chat.completions.create(
+            model=AI_MODEL or "gpt-4o-mini",
+            temperature=0.7,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            max_tokens=1100,
+        )
+        txt = (resp.choices[0].message.content or "").strip()
+        blob = _extract_json_blob(txt)
+        data = json.loads(blob)
+        usage = {
+            "input": getattr(resp, "usage", {}).get("prompt_tokens", 0) if hasattr(resp, "usage") else 0,
+            "output": getattr(resp, "usage", {}).get("completion_tokens", 0) if hasattr(resp, "usage") else 0,
+            "total": getattr(resp, "usage", {}).get("total_tokens", 0) if hasattr(resp, "usage") else 0,
+        }
+        # Minimal validation; if key fields missing, fall back
+        if not isinstance(data, dict) or "future_snapshot" not in data:
+            raise ValueError("Model did not return expected JSON keys.")
+        return (data, usage, txt[:800])
+    except Exception as e:
+        st.warning(f"AI call fell back to safe content: {e}")
+        # Fallback payload (same as above)
         data = {
             "archetype": "Curious Connector",
             "core_need": "Growth with people",
@@ -321,11 +382,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
             "keep_in_view": ["Small > perfect", "Ask for help"],
             "tiny_progress": ["Finish one rep", "Send one invite", "Take one walk"],
         }
-        usage = {"input": 0, "output": 0, "total": 0}
-        return (data, usage, raw_text[:800])
-    except Exception as e:
-        st.error(f"AI call failed: {e}")
-        return ({}, {}, raw_text[:800])
+        return (data, {}, raw_text[:800])
 
 # -----------------------------
 # Email Helpers (SMTP via Gmail)
@@ -524,8 +581,7 @@ for i, q in enumerate(questions, start=1):
         st.session_state["free_by_qid"].pop(q["id"], None)
 
 st.divider()
-st.subheader("Future Snapshot")
-st.write("Your full report includes a short **postcard from 1 month ahead** based on your answers and notes.")
+# (Removed the "Future Snapshot" subheader and explanatory text per request)
 
 # Submit basic answers to show Mini Report preview
 with st.form("mini_form"):
@@ -662,7 +718,7 @@ if st.session_state.get("preview_ready"):
                         )
                         st.success(f"We’ve emailed a code to {st.session_state.pending_email}.")
                         st.session_state.verify_state = "sent"
-                        st.rerun()  # ensure the code-entry UI appears immediately
+                        st.rerun()  # keep this one so the code field appears immediately
                     except Exception as e:
                         if DEV_SHOW_CODES:
                             st.warning(f"(Dev Mode) Email not configured; using on-screen code: **{code}**")
@@ -687,7 +743,7 @@ if st.session_state.get("preview_ready"):
             elif v.strip() == st.session_state.pending_code:
                 st.success("Verified! Your full report is unlocked.")
                 st.session_state.verify_state = "verified"
-                st.rerun()  # immediately reveal the full report section
+                # NOTE: no explicit st.rerun() here (prevents jumping to very top)
             else:
                 st.error("That code didn’t match. Please try again.")
         if resend:
