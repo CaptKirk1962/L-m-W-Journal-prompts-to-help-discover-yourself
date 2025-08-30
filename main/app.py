@@ -30,11 +30,12 @@ def _resolve_model(raw: Optional[str]) -> str:
     }
     return alias_map.get(r, raw)
 
+# Force GPT-5 mini, as requested
 AI_MODEL = _resolve_model(st.secrets.get("LW_MODEL", os.getenv("LW_MODEL", "gpt-5-mini")))
 
-# Output token targets (tunable via secrets or env)
-AI_MAX_TOKENS_CAP = int(os.getenv("LW_MAX_TOKENS", "5000"))           # hard cap passed to API
-DESIRED_OUTPUT_TOKENS = int(os.getenv("LW_OUTPUT_TOKENS", "4000"))    # target length for output
+# Output token caps to MATCH your working app
+AI_MAX_TOKENS_CAP = 7000            # primary attempt for GPT-5 mini (via max_completion_tokens)
+AI_MAX_TOKENS_FALLBACK = 6000       # retry budget if the first attempt errors
 
 # Fixed Future Snapshot horizon (~1 month)
 FUTURE_WEEKS_DEFAULT = 4
@@ -348,7 +349,7 @@ def as_list(v) -> List[str]:
     return []
 
 # =============================================================================
-# AI Runner
+# AI Runner — GPT-5 mini only, with 7000→6000 retry (max_completion_tokens)
 # =============================================================================
 
 def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_free: Dict[str, str] | None = None):
@@ -395,35 +396,36 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
         notes=json.dumps(scores_free or {}, ensure_ascii=False),
     )
 
-    # Prefer GPT-5 family; avoid 4o-mini; fall back to 4o if needed
-    models_to_try = [AI_MODEL, "gpt-5", "gpt-5-large", "gpt-5.1", "gpt-4o"]
-    last_err = None
+    model = AI_MODEL  # gpt-5-mini
     attempts: List[Tuple[str, str]] = []
-
-    # Aim for ~4k output tokens (bounded by cap/env)
-    max_out = max(1200, min(DESIRED_OUTPUT_TOKENS, AI_MAX_TOKENS_CAP))
-
-    for m in models_to_try:
-        if not m:
-            continue
+    for max_out in (AI_MAX_TOKENS_CAP, AI_MAX_TOKENS_FALLBACK):
         try:
-            resp = client.chat.completions.create(
-                model=m,
-                temperature=0.7,
-                messages=[{"role": "system", "content": system_msg},
-                          {"role": "user", "content": user_msg}],
-                max_tokens=max_out,
-            )
+            kwargs = {
+                "model": model,
+                "temperature": 0.7,
+                "messages": [
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                # GPT-5 family uses max_completion_tokens
+                "max_completion_tokens": int(max_out),
+            }
+            st.session_state["param_used"] = "max_completion_tokens"
+            resp = client.chat.completions.create(**kwargs)
+
             txt = (resp.choices[0].message.content or "").strip()
             blob = _extract_json_blob(txt)
             data = json.loads(blob)
 
             usage_obj = getattr(resp, "usage", None)
             if usage_obj:
+                inp = getattr(usage_obj, "prompt_tokens", None)
+                out = getattr(usage_obj, "completion_tokens", None) or getattr(usage_obj, "output_tokens", None)
+                tot = getattr(usage_obj, "total_tokens", None)
                 usage = {
-                    "input": getattr(usage_obj, "prompt_tokens", 0) or 0,
-                    "output": getattr(usage_obj, "completion_tokens", 0) or 0,
-                    "total": getattr(usage_obj, "total_tokens", 0) or 0,
+                    "input": inp or 0,
+                    "output": out or 0,
+                    "total": tot or ((inp or 0) + (out or 0)),
                 }
 
             if "top_themes" not in data or not isinstance(data["top_themes"], list):
@@ -432,16 +434,15 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int], scores_f
                 if key not in data:
                     raise ValueError("Missing key: " + key)
 
-            st.session_state["effective_model"] = m
-            attempts.append((m, "ok"))
+            st.session_state["effective_model"] = model
+            attempts.append((f"{model} @ {max_out}", "ok"))
             st.session_state["model_attempts"] = attempts
             return (data, usage, txt[:800])
         except Exception as e:
-            last_err = e
-            attempts.append((m, f"error: {e}"))
+            attempts.append((f"{model} @ {max_out}", f"error: {e}"))
             continue
 
-    st.warning(f"AI call fell back to safe content: {last_err}")
+    st.warning("AI call fell back to safe content.")
     st.session_state["effective_model"] = "(fallback)"
     st.session_state["model_attempts"] = attempts
     return _fallback_ai(scores), usage, raw_text
@@ -480,7 +481,7 @@ def generate_code() -> str:
     return f"{int.from_bytes(os.urandom(3), 'big') % 1_000_000:06d}"
 
 # =============================================================================
-# PDF Builder (full layout like your “33” PDF) — now using as_list() everywhere
+# PDF Builder (full layout like your “33” PDF) — using as_list() everywhere
 # =============================================================================
 
 def section_title(pdf: "PDF", title: str, size=14, top_margin=2):
@@ -564,7 +565,7 @@ def make_pdf_bytes(
     # What this really says + Insights + Why Now + Future Snapshot
     if ai.get("what_this_really_says"):
         section_title(pdf, "What this really says about you")
-        mc(pdf, ai["what_this_rereally_says"] if "what_this_rereally_says" in ai else ai["what_this_really_says"]); hr(pdf)
+        mc(pdf, ai["what_this_really_says"]); hr(pdf)
 
     if ai.get("insights"):
         section_title(pdf, "Insights"); mc(pdf, "A practical, encouraging synthesis of your answers.")
@@ -937,11 +938,9 @@ if st.session_state.get("verify_state") == "verified":
 
     # Debug
     with st.expander("AI status (debug)", expanded=False):
-        eff = st.session_state.get("effective_model", "(unknown)")
         st.write(f"AI enabled: {ai_enabled()}")
-        st.write(f"Requested model: {AI_MODEL}")
-        st.write(f"Effective model: {eff}")
-        st.write(f"Max tokens target: {DESIRED_OUTPUT_TOKENS} (cap {AI_MAX_TOKENS_CAP})")
+        st.write(f"Model: {AI_MODEL}")
+        st.write(f"Max tokens: {AI_MAX_TOKENS_CAP} (fallback {AI_MAX_TOKENS_FALLBACK})")
         usage = st.session_state.get("ai_usage") or {}
         if usage:
             st.write(f"Token usage — input: {usage.get('input', 0)}, output: {usage.get('output', 0)}, total: {usage.get('total', 0)}")
@@ -952,5 +951,5 @@ if st.session_state.get("verify_state") == "verified":
         if att:
             st.write("Model attempts:")
             for m, status in att:
-                st.write(f" - {m}: {status}")
+                st.write(f"    {m}: {status}")
         st.text("Raw head (first 800 chars)"); st.code(st.session_state.get("raw_head") or "(empty)")
