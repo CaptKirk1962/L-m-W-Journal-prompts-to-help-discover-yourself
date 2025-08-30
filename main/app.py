@@ -15,8 +15,11 @@ AI_MODEL = "gpt-5-mini"
 AI_MAX_TOKENS_CAP = 7000
 AI_MAX_TOKENS_FALLBACK = 6000
 
-# Future Snapshot horizon is now FIXED to ~1 month
-FUTURE_WEEKS_DEFAULT = 4  # used internally if needed, but wording is "1 month"
+# Future Snapshot horizon is FIXED (~1 month). We keep 4 internally, but wording is "1 month ahead".
+FUTURE_WEEKS_DEFAULT = 4
+
+# Safe Mode: disable AI calls by default on Cloud to avoid spinners if networking is blocked
+SAFE_MODE = os.getenv("LW_SAFE_MODE", "1") == "1"
 
 # OpenAI SDK import flag
 OPENAI_OK = False
@@ -33,16 +36,35 @@ def here() -> Path:
 
 
 def load_questions(filename="questions.json") -> Tuple[List[dict], List[str]]:
+    """Load questions; fall back to a tiny built-in set so the UI always renders on Cloud."""
     p = here() / filename
     if not p.exists():
-        st.error(f"Could not find {filename} at {p}. Make sure it is next to app.py.")
-        try:
-            st.caption("Directory listing (debug):")
-            for c in here().iterdir():
-                st.write("-", c.name)
-        except Exception:
-            pass
-        st.stop()
+        st.warning(f"{filename} not found at {p}. Using built-in fallback questions.")
+        fallback = [
+            {
+                "id": "q1",
+                "text": "I feel connected to a supportive community.",
+                "choices": [
+                    {"label": "Strongly disagree", "weights": {"Connection": 0}},
+                    {"label": "Disagree", "weights": {"Connection": 1}},
+                    {"label": "Neutral", "weights": {"Connection": 2}},
+                    {"label": "Agree", "weights": {"Connection": 3}},
+                    {"label": "Strongly agree", "weights": {"Connection": 4}},
+                ],
+            },
+            {
+                "id": "q2",
+                "text": "I’m actively exploring new interests or skills.",
+                "choices": [
+                    {"label": "Strongly disagree", "weights": {"Growth": 0}},
+                    {"label": "Disagree", "weights": {"Growth": 1}},
+                    {"label": "Neutral", "weights": {"Growth": 2}},
+                    {"label": "Agree", "weights": {"Growth": 3}},
+                    {"label": "Strongly agree", "weights": {"Growth": 4}},
+                ],
+            },
+        ]
+        return fallback, THEMES
     with p.open("r", encoding="utf-8") as f:
         data = json.load(f)
     return data["questions"], data.get("themes", THEMES)
@@ -238,7 +260,8 @@ def parse_json_from_text(text: str) -> Optional[dict]:
 
 # ---------- AI ----------
 def ai_enabled() -> bool:
-    return OPENAI_OK and bool(os.getenv("OPENAI_API_KEY"))
+    # Disable AI in Safe Mode or when key/SDK unavailable
+    return (not SAFE_MODE) and OPENAI_OK and bool(os.getenv("OPENAI_API_KEY"))
 
 def format_ai_prompt(first_name: str, horizon_weeks: int, scores: Dict[str, int],
                      free_responses: Dict[str, str], top3: List[str]) -> str:
@@ -249,7 +272,7 @@ def format_ai_prompt(first_name: str, horizon_weeks: int, scores: Dict[str, int]
             fr_bits.append(f"{qid}: {txt.strip()}")
     fr_str = "\n".join(fr_bits) if fr_bits else "None provided."
 
-    # IMPORTANT: normalize to *1 month* phrasing
+    # IMPORTANT: normalize to *1 month* phrasing (no "weeks")
     return textwrap.dedent(f"""
     You are a master reflection coach. Using the theme scores, top themes, and the user's own words,
     produce ONE JSON object with EXACTLY these keys. Use ASCII only.
@@ -297,7 +320,7 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
            free_responses: Dict[str, str], top3: List[str],
            cap_tokens: int) -> Tuple[Dict[str, Any], Dict[str, int], str]:
     if not ai_enabled():
-        return ({}, {}, "AI disabled or no OPENAI_API_KEY")
+        return ({}, {}, "AI disabled (SAFE_MODE on or no OPENAI_API_KEY/SDK)")
 
     client = OpenAI()
     prompt = format_ai_prompt(first_name, horizon_weeks, scores, free_responses, top3)
@@ -324,10 +347,30 @@ def run_ai(first_name: str, horizon_weeks: int, scores: Dict[str, int],
         if not data:
             raise ValueError("AI did not return valid JSON")
     except Exception:
-        # fallback minimal content
-        data = None
+        # Try a shorter call, then fall back
+        try:
+            resp = call(AI_MAX_TOKENS_FALLBACK)
+            raw_text = getattr(resp, "output_text", "") or ""
+            if getattr(resp, "usage", None):
+                u = resp.usage
+                usage = {
+                    "input": getattr(u, "input_tokens", None) or getattr(u, "prompt_tokens", None) or 0,
+                    "output": getattr(u, "output_tokens", None) or getattr(u, "completion_tokens", None) or 0,
+                    "total": getattr(u, "total_tokens", None) or 0,
+                }
+            data = parse_json_from_text(raw_text)
+        except Exception:
+            data = None
+
+    # Save raw head for debugging (best-effort, ignore errors)
+    try:
+        (here() / "_last_ai.json").write_text(raw_text[:12000], encoding="utf-8")
+        (Path("/tmp") / "last_ai.json").write_text(raw_text[:12000], encoding="utf-8")
+    except Exception:
+        pass
 
     if not data:
+        # Concise fallback with normalized month phrasing
         return ({
             "archetype": "Curious Connector",
             "core_need": "Growth with people",
@@ -403,7 +446,7 @@ def make_pdf_bytes(
     mc(pdf, ", ".join(top3) if top3 else "-")
     draw_scores_barchart(pdf, scores)
 
-    # ===== From your words ===== (summary only, no keepers rendering here)
+    # ===== From your words =====
     fyw = ai.get("from_your_words") or {}
     if fyw.get("summary"):
         section_break(pdf, "From your words", "We pulled a few cues from what you typed.")
@@ -430,7 +473,7 @@ def make_pdf_bytes(
         section_break(pdf, "Why Now", "Why these themes may be active in this season.")
         mc(pdf, ai["why_now"])
     if ai.get("future_snapshot"):
-        # NORMALIZED WORDING HERE:
+        # normalized wording (no weeks)
         section_break(pdf, "Future Snapshot", "A short postcard from 1 month ahead.")
         mc(pdf, ai["future_snapshot"])
 
@@ -516,17 +559,18 @@ def make_pdf_bytes(
 # ---------- App UI ----------
 st.set_page_config(page_title="Life Minus Work — Questionnaire", page_icon="🧭", layout="centered")
 st.title("Life Minus Work — Questionnaire")
+st.caption("✅ App booted. If you see this, imports & first render succeeded.")
 
 questions, _themes = load_questions("questions.json")
 ensure_state(questions)
 
 st.write(
-    "Answer 15 questions, add your own reflections, and instantly download a personalized PDF summary. "
+    "Answer the questions, add your own reflections, and instantly download a personalized PDF summary. "
     "**Desktop:** press Ctrl+Enter in text boxes to apply. **Mobile:** tap outside the box to save."
 )
 
-# Future Snapshot horizon is FIXED. No slider.
-horizon_weeks = FUTURE_WEEKS_DEFAULT  # kept for internal plumbing; wording uses '1 month'
+# Fixed Future Snapshot horizon (no slider)
+horizon_weeks = FUTURE_WEEKS_DEFAULT  # kept for plumbing, wording uses '1 month'
 
 for i, q in enumerate(questions, start=1):
     st.subheader(f"Q{i}. {q['text']}")
@@ -555,9 +599,8 @@ for i, q in enumerate(questions, start=1):
 
 st.divider()
 
-# Gentle explainer for the snapshot phrasing
 st.subheader("Future Snapshot")
-st.write("Imagine it’s about **1 month from now**. Your report will include a short postcard from that future you.")
+st.write("Your report will include a short **postcard from 1 month ahead** based on your answers and notes.")
 
 st.subheader("Email & Download")
 with st.form("finish"):
@@ -570,7 +613,7 @@ with st.form("finish"):
     )
     submit = st.form_submit_button("Generate My Personalized Report", help="This can take up to 1 minute")
 
-st.caption("⏳ It can take up to 1 minute to generate. When ready, click **Download PDF** below.")
+st.caption("⏳ After generating, a **Download PDF** button will appear below.")
 
 if submit:
     if not email_val or not consent_val:
@@ -585,7 +628,7 @@ if submit:
 
         ai_sections, usage, raw_head = run_ai(
             first_name=st.session_state.get("first_name_input", first_name),
-            horizon_weeks=horizon_weeks,  # still passed through, but prompt uses "1 month later"
+            horizon_weeks=horizon_weeks,  # prompt uses "1 month later" wording
             scores=scores,
             free_responses=free_responses,
             top3=top3,
@@ -599,7 +642,7 @@ if submit:
             scores=scores,
             top3=top3,
             ai=ai_sections,
-            horizon_weeks=horizon_weeks,  # harmless to pass
+            horizon_weeks=horizon_weeks,
             logo_path=logo if logo.exists() else None,
         )
 
@@ -620,4 +663,4 @@ if submit:
             else:
                 st.write("No usage returned by the API (some models/paths omit it).")
             st.text("Raw head (first 800 chars)")
-            st.code(raw_head)
+            st.code(raw_head or "(empty)")
