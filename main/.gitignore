@@ -1,0 +1,12 @@
+# local data & temp
+emails.csv
+*_emails.csv
+_logo_tmp.png
+
+# streamlit & secrets (local copies)
+.streamlit/secrets.toml
+
+# common Python junk
+__pycache__/
+*.pyc
+.DS_Store
