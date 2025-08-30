@@ -599,9 +599,6 @@ for i, q in enumerate(questions, start=1):
 
 st.divider()
 
-st.subheader("Future Snapshot")
-st.write("Your report will include a short **postcard from 1 month ahead** based on your answers and notes.")
-
 st.subheader("Email & Download")
 with st.form("finish"):
     first_name = st.text_input("Your first name (for the report greeting)", key="first_name_input", placeholder="First name")
